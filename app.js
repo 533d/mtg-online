@@ -1576,7 +1576,8 @@ function moveCard(playerId, cardId, from, to, options = {}) {
   } else {
     player[to].unshift(card);
   }
-  saveState(`${player.name} 将 ${cardName} 从${zoneLabel(from)}移到${zoneLabel(to)}`);
+  const movedWithinBattlefield = from.startsWith("battlefield") && to.startsWith("battlefield");
+  saveState(movedWithinBattlefield ? null : `${player.name} 将 ${cardName} 从${zoneLabel(from)}移到${zoneLabel(to)}`);
 }
 
 function createToken(playerId, root) {
