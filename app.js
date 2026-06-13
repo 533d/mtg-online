@@ -3,6 +3,7 @@ const PANEL_POSITION_KEY = "mtg-online-panel-positions-v1";
 const MARKER_TOOLBAR_KEY = "mtg-online-marker-toolbar-v1";
 const STATE_VERSION = 16;
 const SCRYFALL_NAMED_URL = "https://api.scryfall.com/cards/named?exact=";
+const SCRYFALL_SEARCH_URL = "https://api.scryfall.com/cards/search?q=";
 const CARD_IMAGE_SOURCE = "scryfall";
 const TABLE_STATE_URL = "/api/table/state";
 const TABLE_POLL_MS = 1000;
@@ -428,6 +429,9 @@ let lastCommittedSnapshot = snapshotStateForUndo(state);
 localStorage.removeItem("mtg-online-seat");
 let seat = normalizeSeat(sessionStorage.getItem("mtg-online-seat"));
 let lookupCardDetail = null;
+let cardDetailState = null;
+let cardDetailRequestId = 0;
+const chineseDetailCache = new Map();
 const expandedZones = { p1: null, p2: null };
 const playerPanelOpen = { p1: true, p2: true };
 const playerPanelPositions = loadPanelPositions();
@@ -2034,6 +2038,7 @@ function openZone(playerId, zone) {
   els.zoneMeta.textContent = `${cards.length} 张`;
   if (zone === "library") {
     els.zoneCards.innerHTML = renderLibraryList(player);
+    bindLibraryListCards(els.zoneCards);
     els.zoneDialog.showModal();
     return;
   }
@@ -2068,14 +2073,93 @@ function openZone(playerId, zone) {
 function openCard(cardId) {
   const instance = findInstance(cardId);
   if (!instance) return;
-  els.cardDetail.innerHTML = renderCard("", { ...instance, tapped: false }, "detail", false);
-  els.cardDialog.showModal();
+  openCardDetail({
+    englishCard: getCardInfo(instance),
+    searchName: catalogSearchName(instance.cardKey, getCardInfo(instance)),
+    instance: { ...instance, tapped: false },
+  });
 }
 
 function openLookupCard() {
   if (!lookupCardDetail) return;
-  els.cardDetail.innerHTML = renderLookupDetailCard(lookupCardDetail);
+  openCardDetail({
+    englishCard: lookupCardDetail,
+    searchName: lookupCardDetail.name,
+  });
+}
+
+function openLibraryCard(cardKey) {
+  const card = state.catalog[cardKey] || { name: cardKey, typeLine: "", image: "" };
+  openCardDetail({
+    englishCard: card,
+    searchName: catalogSearchName(cardKey, card),
+  });
+}
+
+function openCardDetail({ englishCard, searchName, instance = null }) {
+  cardDetailRequestId += 1;
+  cardDetailState = {
+    requestId: cardDetailRequestId,
+    language: "en",
+    loadingChinese: false,
+    chineseFailed: false,
+    englishCard,
+    chineseCard: chineseDetailCache.get(normalizeDetailSearchName(searchName)) || null,
+    searchName,
+    instance,
+  };
+  renderCardDetail();
   els.cardDialog.showModal();
+}
+
+function renderCardDetail() {
+  if (!cardDetailState) return;
+  const usingChinese = cardDetailState.language === "zh" && cardDetailState.chineseCard;
+  const card = usingChinese ? cardDetailState.chineseCard : cardDetailState.englishCard;
+  const toggleLabel = usingChinese ? "英文" : "中文";
+  const status = cardDetailState.loadingChinese
+    ? "正在查询中文卡图..."
+    : cardDetailState.chineseFailed
+      ? "未找到中文卡图"
+      : "";
+  els.cardDetail.innerHTML = `
+    <div class="card-detail-toolbar">
+      <button type="button" data-card-language-toggle ${cardDetailState.loadingChinese ? "disabled" : ""}>${toggleLabel}</button>
+      ${status ? `<span>${escapeHtml(status)}</span>` : ""}
+    </div>
+    ${renderDetailCard(card, cardDetailState.instance)}`;
+  els.cardDetail.querySelector("[data-card-language-toggle]")?.addEventListener("click", toggleCardDetailLanguage);
+}
+
+async function toggleCardDetailLanguage() {
+  if (!cardDetailState) return;
+  if (cardDetailState.language === "zh" && cardDetailState.chineseCard) {
+    cardDetailState.language = "en";
+    renderCardDetail();
+    return;
+  }
+  if (cardDetailState.chineseCard) {
+    cardDetailState.language = "zh";
+    renderCardDetail();
+    return;
+  }
+
+  const requestId = cardDetailState.requestId;
+  const searchName = cardDetailState.searchName;
+  cardDetailState.loadingChinese = true;
+  cardDetailState.chineseFailed = false;
+  renderCardDetail();
+  const chineseCard = await fetchChineseDetailCard(searchName);
+  if (!cardDetailState || cardDetailState.requestId !== requestId) return;
+  cardDetailState.loadingChinese = false;
+  if (chineseCard) {
+    cardDetailState.chineseCard = chineseCard;
+    cardDetailState.language = "zh";
+    chineseDetailCache.set(normalizeDetailSearchName(searchName), chineseCard);
+  } else {
+    cardDetailState.chineseFailed = true;
+  }
+  renderCardDetail();
 }
 
 function findInstance(cardId) {
@@ -2155,14 +2239,20 @@ function renderLibraryList(player) {
         .map((entry) => {
           const card = state.catalog[entry.name] || { name: entry.name, typeLine: "", image: "" };
           return `
-            <div class="library-card" data-card-key="${escapeHtml(entry.name)}" data-remaining="${entry.remaining}">
+            <button class="library-card" type="button" data-card-key="${escapeHtml(entry.name)}" data-remaining="${entry.remaining}" aria-label="查看 ${escapeHtml(card.name)} 大图">
               <div class="library-face">
                 ${renderLibraryFace(card, entry.remaining)}
               </div>
-            </div>`;
+            </button>`;
         })
         .join("")}
     </div>`;
+}
+
+function bindLibraryListCards(root) {
+  root.querySelectorAll(".library-card[data-card-key]").forEach((button) => {
+    button.addEventListener("click", () => openLibraryCard(button.dataset.cardKey));
+  });
 }
 
 function renderLibraryFace(card, remaining) {
@@ -2246,6 +2336,38 @@ async function fetchExactCard(name) {
   } catch {
     return null;
   }
+}
+
+async function fetchChineseDetailCard(name) {
+  const exactName = escapeScryfallQueryString(normalizeDetailSearchName(name));
+  if (!exactName) return null;
+  for (const language of ["zhs", "zht"]) {
+    const card = await fetchFirstScryfallSearchResult(`!"${exactName}" lang:${language}`, name);
+    if (card?.image) return card;
+  }
+  return null;
+}
+
+async function fetchFirstScryfallSearchResult(query, fallbackName) {
+  try {
+    const response = await fetch(`${SCRYFALL_SEARCH_URL}${encodeURIComponent(query)}`);
+    if (!response.ok) return null;
+    const payload = await response.json();
+    const card = payload.data?.[0];
+    return card ? cardFromScryfall(card, fallbackName) : null;
+  } catch {
+    return null;
+  }
+}
+
+function escapeScryfallQueryString(value) {
+  return String(value || "").replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
+function normalizeDetailSearchName(name) {
+  return String(name || "")
+    .replace(/\s+token$/i, "")
+    .trim();
 }
 
 function cardFromScryfall(card, fallbackName) {
@@ -2606,13 +2728,13 @@ function rarityLabel(rarity) {
   }[rarity] || rarity;
 }
 
-function renderLookupDetailCard(card) {
+function renderDetailCard(card, instance = null) {
   return `
     <article class="card">
       ${
         card.image
-          ? `<img src="${imageSrc(card.image)}" alt="${escapeHtml(card.name)}" loading="lazy" draggable="false" />`
-          : `<div class="fallback-face"><strong>${escapeHtml(card.name)}</strong><small>${escapeHtml(card.typeLine || "")}</small><p>卡面图片未加载</p></div>`
+          ? `<img src="${escapeHtml(imageSrc(card.image))}" alt="${escapeHtml(card.name)}" loading="lazy" draggable="false" />`
+          : `<div class="fallback-face"><strong>${escapeHtml(card.name)}</strong><small>${escapeHtml(card.typeLine || "")}</small><p>${instance?.isToken ? "衍生物" : "卡面图片未加载"}</p></div>`
       }
     </article>`;
 }

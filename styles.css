@@ -1351,6 +1351,18 @@ h1 {
 .library-card {
   display: grid;
   justify-items: center;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.library-card:hover .library-face,
+.library-card:focus-visible .library-face {
+  border-color: var(--accent);
+  box-shadow: 0 12px 24px rgba(0, 0, 0, 0.36);
 }
 
 .library-face {
@@ -1402,6 +1414,20 @@ h1 {
 
 #cardDetail .card {
   width: 100%;
+}
+
+.card-detail-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+  min-height: 34px;
+}
+
+.card-detail-toolbar span {
+  color: var(--muted);
+  font-size: 12px;
 }
 
 #closeCard {
