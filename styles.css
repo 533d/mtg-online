@@ -208,29 +208,6 @@ h1 {
   background: var(--accent);
 }
 
-.card-source-control {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  align-items: center;
-  gap: 8px;
-  min-height: 32px;
-  padding: 4px 8px;
-  border: 1px solid rgba(61, 70, 63, 0.88);
-  border-radius: 6px;
-  background: rgba(21, 24, 22, 0.72);
-  color: var(--muted);
-  font-size: 12px;
-}
-
-.card-source-control select {
-  width: 100%;
-  min-width: 0;
-  height: 26px;
-  padding: 0 6px;
-  background: #151816;
-  font-size: 12px;
-}
-
 .session-actions {
   display: grid;
   grid-template-columns: minmax(116px, 1.3fr) minmax(58px, 0.7fr) minmax(86px, 1fr);

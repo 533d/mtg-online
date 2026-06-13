@@ -1,10 +1,9 @@
 const STORAGE_KEY = "mtg-online-table-state-v1";
 const PANEL_POSITION_KEY = "mtg-online-panel-positions-v1";
 const MARKER_TOOLBAR_KEY = "mtg-online-marker-toolbar-v1";
-const CARD_SOURCE_KEY = "mtg-online-card-source-v1";
-const STATE_VERSION = 15;
-const CARD_EXACT_URL = "/api/card/exact?name=";
-const IMAGE_PROXY_URL = "/api/card-image?url=";
+const STATE_VERSION = 16;
+const SCRYFALL_NAMED_URL = "https://api.scryfall.com/cards/named?exact=";
+const CARD_IMAGE_SOURCE = "scryfall";
 const TABLE_STATE_URL = "/api/table/state";
 const TABLE_POLL_MS = 1000;
 const UNDO_STACK_LIMIT = 8;
@@ -47,8 +46,6 @@ const SEAT_LABELS = {
   p2: "玩家二",
   spectator: "旁观",
 };
-const CARD_SOURCES = ["official", "dragonbox"];
-const DEFAULT_CARD_SOURCE = "official";
 const SYNC_LABELS = {
   connecting: "正在连接",
   connected: "已连接",
@@ -392,7 +389,6 @@ const els = {
   timerToggle: document.querySelector("#timerToggle"),
   timerReset: document.querySelector("#timerReset"),
   syncStatus: document.querySelector("#syncStatus"),
-  cardSource: document.querySelector("#cardSource"),
   undoAction: document.querySelector("#undoAction"),
   flipCoin: document.querySelector("#flipCoin"),
   rollD6: document.querySelector("#rollD6"),
@@ -431,8 +427,6 @@ let state = loadState();
 let lastCommittedSnapshot = snapshotStateForUndo(state);
 localStorage.removeItem("mtg-online-seat");
 let seat = normalizeSeat(sessionStorage.getItem("mtg-online-seat"));
-let cardSource = loadCardSource();
-let cardSourceEpoch = 0;
 let lookupCardDetail = null;
 const expandedZones = { p1: null, p2: null };
 const playerPanelOpen = { p1: true, p2: true };
@@ -440,7 +434,6 @@ const playerPanelPositions = loadPanelPositions();
 const markerToolbarState = loadMarkerToolbarState();
 let relationSelection = null;
 updateSeatToggle();
-updateCardSourceSelect();
 
 function makeInitialState() {
   return {
@@ -584,7 +577,7 @@ function migrateState(loaded) {
   loaded.players.p1 = normalizePlayerState(loaded.players.p1, "玩家一");
   loaded.players.p2 = normalizePlayerState(loaded.players.p2, "玩家二");
   loaded.catalog = normalizeCatalog(loaded.catalog);
-  if (previousVersion < 15) {
+  if (previousVersion < 16) {
     loaded.catalog = resetCatalogForEnglishImages(loaded.catalog);
   }
   if (previousVersion < 13) {
@@ -619,14 +612,14 @@ function normalizeCatalog(catalog) {
   const catalogSource = catalog && typeof catalog === "object" ? catalog : {};
   return Object.fromEntries(
     Object.entries({ ...sampleCatalog, ...catalogSource }).map(([key, card]) => {
-      const cardSource = card && typeof card === "object" ? card : {};
+      const catalogCard = card && typeof card === "object" ? card : {};
       return [
         key,
         {
-          name: cardSource.name || key,
-          typeLine: cardSource.typeLine || "",
-          ...cardSource,
-          image: sanitizeCatalogImage(cardSource.image),
+          name: catalogCard.name || key,
+          typeLine: catalogCard.typeLine || "",
+          ...catalogCard,
+          image: sanitizeCatalogImage(catalogCard.image),
         },
       ];
     }),
@@ -636,16 +629,7 @@ function normalizeCatalog(catalog) {
 function sanitizeCatalogImage(url) {
   if (typeof url !== "string") return "";
   if (url.startsWith("https://cards.scryfall.io/")) return url;
-  if (url.startsWith("https://mtg.dragonbox.top/")) return url;
-  if (!url.startsWith("/api/card-image?")) return "";
-  try {
-    const sourceUrl = new URL(url, window.location.href).searchParams.get("url") || "";
-    return sourceUrl.startsWith("https://cards.scryfall.io/") || sourceUrl.startsWith("https://mtg.dragonbox.top/")
-      ? sourceUrl
-      : "";
-  } catch {
-    return "";
-  }
+  return "";
 }
 
 function resetCatalogForEnglishImages(catalog) {
@@ -904,45 +888,6 @@ function opponentOf(playerId) {
 
 function normalizeSeat(value) {
   return SEAT_ORDER.includes(value) ? value : "p1";
-}
-
-function normalizeCardSource(value) {
-  return CARD_SOURCES.includes(value) ? value : DEFAULT_CARD_SOURCE;
-}
-
-function loadCardSource() {
-  return normalizeCardSource(localStorage.getItem(CARD_SOURCE_KEY));
-}
-
-function updateCardSourceSelect() {
-  if (els.cardSource) els.cardSource.value = cardSource;
-}
-
-function handleCardSourceChange() {
-  const nextSource = normalizeCardSource(els.cardSource?.value);
-  if (nextSource === cardSource) return;
-  cardSource = nextSource;
-  cardSourceEpoch += 1;
-  pendingCardFetches.clear();
-  localStorage.setItem(CARD_SOURCE_KEY, cardSource);
-  resetCatalogForCardSource();
-  persistLocalState();
-  render({ captureLayout: false });
-}
-
-function resetCatalogForCardSource() {
-  state.catalog = Object.fromEntries(
-    Object.entries(state.catalog).map(([key, card]) => [
-      key,
-      {
-        ...card,
-        image: "",
-        imageSource: "",
-        lookupFailed: false,
-        lookupFailedSource: "",
-      },
-    ]),
-  );
 }
 
 function updateSeatToggle() {
@@ -2177,8 +2122,7 @@ function removeCardFromZone(player, cardId, zone) {
 }
 
 function imageSrc(url) {
-  if (!url || url.startsWith("/api/card-image")) return url;
-  return `${IMAGE_PROXY_URL}${encodeURIComponent(url)}`;
+  return url || "";
 }
 
 function zoneLabel(zone) {
@@ -2286,15 +2230,15 @@ function cleanDeckCardName(name) {
     .trim();
 }
 
-async function fetchCard(name, source = cardSource) {
-  const exactCard = await fetchExactCard(name, source);
+async function fetchCard(name) {
+  const exactCard = await fetchExactCard(name);
   if (exactCard) return exactCard;
   return { name, typeLine: "", image: "" };
 }
 
-async function fetchExactCard(name, source = cardSource) {
+async function fetchExactCard(name) {
   try {
-    const response = await fetch(`${CARD_EXACT_URL}${encodeURIComponent(name)}&source=${encodeURIComponent(source)}`);
+    const response = await fetch(`${SCRYFALL_NAMED_URL}${encodeURIComponent(name)}`);
     if (!response.ok) return null;
     const card = await response.json();
     return cardFromScryfall(card, name);
@@ -2375,27 +2319,24 @@ function missingCatalogNames() {
 
 function catalogEntryNeedsImage(card) {
   if (!card) return true;
-  if (card.lookupFailed && card.lookupFailedSource === cardSource) return false;
+  if (card.lookupFailed && card.lookupFailedSource === CARD_IMAGE_SOURCE) return false;
   if (!card.image) return true;
-  return card.imageSource !== cardSource;
+  return card.imageSource !== CARD_IMAGE_SOURCE;
 }
 
 async function refreshCatalogEntries(names, options = {}) {
   const uniqueKeys = [...new Set(names)].filter((key) => key && !pendingCardFetches.has(key));
-  const fetchSource = cardSource;
-  const fetchEpoch = cardSourceEpoch;
   for (const key of uniqueKeys) {
     const existing = state.catalog[key];
     const queryName = catalogSearchName(key, existing);
     pendingCardFetches.add(key);
-    const card = await fetchCard(queryName, fetchSource);
+    const card = await fetchCard(queryName);
     pendingCardFetches.delete(key);
-    if (fetchEpoch !== cardSourceEpoch || fetchSource !== cardSource) continue;
     if (card.image || card.typeLine) {
       const nextCard = {
         ...existing,
         ...card,
-        imageSource: fetchSource,
+        imageSource: CARD_IMAGE_SOURCE,
         lookupFailed: false,
         lookupFailedSource: "",
       };
@@ -2405,7 +2346,7 @@ async function refreshCatalogEntries(names, options = {}) {
       refreshRenderedCatalogEntry(key);
       if (options.renderEach === true) render();
     } else {
-      state.catalog[key] = { ...existing, lookupFailed: true, lookupFailedSource: fetchSource };
+      state.catalog[key] = { ...existing, lookupFailed: true, lookupFailedSource: CARD_IMAGE_SOURCE };
       persistLocalState();
     }
     await wait(150);
@@ -2877,7 +2818,6 @@ function applyLookupSuggestion(prefix) {
 }
 
 els.seatToggle.addEventListener("click", cycleSeat);
-els.cardSource?.addEventListener("change", handleCardSourceChange);
 els.timerToggle.addEventListener("click", toggleTimer);
 els.timerReset.addEventListener("click", resetTimer);
 els.undoAction.addEventListener("click", undoLastAction);
