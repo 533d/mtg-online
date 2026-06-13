@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MTG Online Table</title>
+    <link rel="stylesheet" href="./styles.css?v=20260613-12" />
+  </head>
+  <body>
+    <div id="app" class="app-shell">
+      <header class="topbar">
+        <details class="top-drawer">
+          <summary>
+            <span class="mark">MTG</span>
+            <span>牌桌控制</span>
+          </summary>
+          <div class="top-controls">
+            <div class="session-tools">
+              <div class="table-timer" aria-label="牌桌计时器">
+                <strong id="tableTimer">00:00</strong>
+                <button id="timerToggle" type="button">开始</button>
+                <button id="timerReset" type="button">归零</button>
+              </div>
+              <div id="syncStatus" class="sync-status" data-status="connecting">正在连接</div>
+              <label class="card-source-control" for="cardSource">
+                <span>卡图来源</span>
+                <select id="cardSource">
+                  <option value="official">官方</option>
+                  <option value="dragonbox">dragonbox</option>
+                </select>
+              </label>
+              <div class="session-actions">
+                <button id="seatToggle" type="button">视角：玩家一</button>
+                <button id="undoAction" type="button">撤销</button>
+                <button id="resetGame" type="button">重置牌桌</button>
+              </div>
+              <div class="random-tools">
+                <button id="flipCoin" type="button">硬币</button>
+                <button id="rollD6" type="button">D6</button>
+                <button id="rollD20" type="button">D20</button>
+              </div>
+            </div>
+            <div class="top-import">
+              <textarea id="deckImport" placeholder="导入牌表，例如：4 Lightning Bolt&#10;8 Island"></textarea>
+              <button id="importDeckTop" type="button">导入并洗牌</button>
+            </div>
+            <div class="lookup-panel">
+              <div class="lookup-row">
+                <input id="lookupInput" type="search" placeholder="查牌名或机制，例如 Flying" />
+                <button id="lookupButton" type="button">搜索</button>
+              </div>
+              <div id="lookupSuggestions" class="lookup-suggestions" aria-label="查询候选">
+                <button type="button" data-lookup-prefix="Cards: "><strong>Cards:</strong><span>卡片</span></button>
+                <button type="button" data-lookup-prefix="Mechanics: "><strong>Mechanics:</strong><span>机制</span></button>
+                <button type="button" data-lookup-prefix="Translate: "><strong>Translate:</strong><span>翻译</span></button>
+              </div>
+              <div id="lookupOutput" class="lookup-output">输入牌名或机制</div>
+            </div>
+            <div id="logPanel" class="log-panel"></div>
+          </div>
+        </details>
+      </header>
+
+      <main class="table" aria-live="polite">
+        <section id="opponentArea" class="player-area opponent"></section>
+        <section id="battlefieldArea" class="battlefield-area"></section>
+        <section id="selfArea" class="player-area self"></section>
+      </main>
+    </div>
+
+    <dialog id="zoneDialog" class="zone-dialog">
+      <div class="dialog-head">
+        <div>
+          <h2 id="zoneTitle"></h2>
+          <p id="zoneMeta"></p>
+        </div>
+        <button id="closeZone" type="button" aria-label="关闭">X</button>
+      </div>
+      <div id="zoneCards" class="zone-cards"></div>
+    </dialog>
+
+    <dialog id="cardDialog" class="card-dialog">
+      <button id="closeCard" type="button" aria-label="关闭">X</button>
+      <div id="cardDetail"></div>
+    </dialog>
+
+    <dialog id="libraryMoveDialog" class="library-move-dialog">
+      <div class="dialog-head">
+        <div>
+          <h2 id="libraryMoveTitle">移到牌库</h2>
+          <p id="libraryMoveMeta"></p>
+        </div>
+        <button type="button" aria-label="取消" data-library-destination="">X</button>
+      </div>
+      <div class="library-move-options">
+        <button type="button" data-library-destination="library-top">牌库顶</button>
+        <button type="button" data-library-destination="library-bottom">牌库底</button>
+        <button type="button" data-library-destination="library-random">洗入牌库</button>
+        <button type="button" class="library-move-cancel" data-library-destination="">取消</button>
+      </div>
+    </dialog>
+
+    <div id="relationActionPopover" class="relation-action-popover" hidden>
+      <strong>记录操作</strong>
+      <p id="relationActionMeta"></p>
+      <select id="relationActionSelect" aria-label="选择操作">
+        <option value="指定目标">指定目标</option>
+        <option value="造成伤害">造成伤害</option>
+        <option value="攻击">攻击</option>
+        <option value="阻挡">阻挡</option>
+        <option value="结附">结附</option>
+        <option value="装备">装备</option>
+        <option value="复制">复制</option>
+        <option value="响应">响应</option>
+        <option value="指向">指向</option>
+        <option value="custom">自定义</option>
+      </select>
+      <input id="relationActionCustom" type="text" maxlength="30" placeholder="自定义操作" hidden />
+      <div class="relation-action-buttons">
+        <button id="relationActionConfirm" type="button">记录</button>
+        <button id="relationActionCancel" type="button">取消</button>
+      </div>
+    </div>
+
+    <script src="./app.js?v=20260613-12"></script>
+  </body>
+</html>
