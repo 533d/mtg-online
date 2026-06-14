@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>MTG Online Table</title>
-    <link rel="stylesheet" href="./styles.css?v=20260613-15" />
+    <link rel="stylesheet" href="./styles.css?v=20260614-11" />
   </head>
   <body>
     <div id="app" class="app-shell">
@@ -39,13 +39,8 @@
             </div>
             <div class="lookup-panel">
               <div class="lookup-row">
-                <input id="lookupInput" type="search" placeholder="查牌名或机制，例如 Flying" />
+                <input id="lookupInput" type="search" placeholder="查牌名、机制，或 翻译: trample" />
                 <button id="lookupButton" type="button">搜索</button>
-              </div>
-              <div id="lookupSuggestions" class="lookup-suggestions" aria-label="查询候选">
-                <button type="button" data-lookup-prefix="Cards: "><strong>Cards:</strong><span>卡片</span></button>
-                <button type="button" data-lookup-prefix="Mechanics: "><strong>Mechanics:</strong><span>机制</span></button>
-                <button type="button" data-lookup-prefix="Translate: "><strong>Translate:</strong><span>翻译</span></button>
               </div>
               <div id="lookupOutput" class="lookup-output">输入牌名或机制</div>
             </div>
@@ -115,6 +110,6 @@
       </div>
     </div>
 
-    <script src="./app.js?v=20260613-15"></script>
+    <script src="./app.js?v=20260614-11"></script>
   </body>
 </html>

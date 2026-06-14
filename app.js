@@ -1,7 +1,7 @@
 const STORAGE_KEY = "mtg-online-table-state-v1";
 const PANEL_POSITION_KEY = "mtg-online-panel-positions-v1";
 const MARKER_TOOLBAR_KEY = "mtg-online-marker-toolbar-v1";
-const STATE_VERSION = 16;
+const STATE_VERSION = 18;
 const SCRYFALL_NAMED_URL = "https://api.scryfall.com/cards/named?exact=";
 const SCRYFALL_SEARCH_URL = "https://api.scryfall.com/cards/search?q=";
 const CARD_IMAGE_SOURCE = "scryfall";
@@ -399,7 +399,6 @@ const els = {
   importDeckTop: document.querySelector("#importDeckTop"),
   lookupInput: document.querySelector("#lookupInput"),
   lookupButton: document.querySelector("#lookupButton"),
-  lookupSuggestions: document.querySelector("#lookupSuggestions"),
   lookupOutput: document.querySelector("#lookupOutput"),
   opponentArea: document.querySelector("#opponentArea"),
   battlefieldArea: document.querySelector("#battlefieldArea"),
@@ -432,10 +431,10 @@ let lookupCardDetail = null;
 let cardDetailState = null;
 let cardDetailRequestId = 0;
 const chineseDetailCache = new Map();
-const expandedZones = { p1: null, p2: null };
 const playerPanelOpen = { p1: true, p2: true };
 const playerPanelPositions = loadPanelPositions();
 const markerToolbarState = loadMarkerToolbarState();
+const handLayoutVars = new Map();
 let relationSelection = null;
 updateSeatToggle();
 
@@ -459,6 +458,7 @@ function makePlayer(name) {
     name,
     life: 20,
     library: [],
+    extraDeck: [],
     hand: [],
     deckList: [],
     battlefield: makeBattlefield(),
@@ -602,9 +602,16 @@ function migrateState(loaded) {
       player.battlefield.height = undefined;
       clampBattlefieldToHalfHeight(player, defaultBattlefieldHalfHeight());
     }
+    if (previousVersion < 18) {
+      removeLegacyBattlefieldPlaceholders(player);
+    }
     player.deckList = normalizeDeckList(player.deckList?.length ? player.deckList : inferDeckList(player));
   });
   return loaded;
+}
+
+function removeLegacyBattlefieldPlaceholders(player) {
+  player.battlefield.cards = player.battlefield.cards.filter((card) => card.cardKey);
 }
 
 function shouldResetLegacyBattlefieldHeight(battlefield) {
@@ -679,6 +686,7 @@ function normalizePlayerState(player, fallbackName) {
     ...player,
     name: player.name || fallbackName,
     library: Array.isArray(player.library) ? player.library : [],
+    extraDeck: normalizeExtraDeckList(player.extraDeck || []),
     hand: Array.isArray(player.hand) ? player.hand : [],
     deckList: normalizeDeckList(player.deckList || []),
     battlefield: normalizeBattlefield(player.battlefield),
@@ -702,10 +710,26 @@ function normalizeDeckList(entries) {
   return [...merged.values()];
 }
 
+function normalizeExtraDeckList(entries) {
+  const seen = new Set();
+  return (Array.isArray(entries) ? entries : [])
+    .map((entry) => (typeof entry === "string" ? entry : entry?.name))
+    .filter(Boolean)
+    .map((name) => String(name).trim())
+    .filter((name) => {
+      const key = normalizeSearchName(name);
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .map((name) => ({ name }));
+}
+
 function inferDeckList(player) {
   const seen = new Map();
   const allCards = [
     ...(player.library || []),
+    ...(player.extraDeck || []).map((entry) => ({ cardKey: entry.name })),
     ...(player.hand || []),
     ...battlefieldCards(player),
     ...(player.graveyard || []),
@@ -860,14 +884,18 @@ function applyIncomingState(incoming) {
   lastCommittedSnapshot = snapshotStateForUndo(state);
   syncingRemote = false;
   render({ captureLayout: false });
+  if (incomingVersion < STATE_VERSION) {
+    publishTableState();
+  }
   return true;
 }
 
 async function startOnlineSync() {
   const serverState = await fetchTableState();
   if (serverState) {
+    const serverVersion = Number(serverState.version) || 0;
     const applied = applyIncomingState(serverState);
-    if (!applied && serverState.updatedAt < state.updatedAt) {
+    if (!applied && (serverState.updatedAt < state.updatedAt || serverVersion < STATE_VERSION)) {
       publishTableState();
     }
   } else {
@@ -918,6 +946,7 @@ function render(options = {}) {
   renderSyncStatus();
   renderUndoButton();
   observeBattlefieldResize();
+  syncHandFanLayout();
   updateRelationSelectionUi();
   hydrateMissingCatalogImages();
 }
@@ -1111,6 +1140,7 @@ function renderSharedBattlefield(root, selfId, opponentId) {
 
 function bindPlayerControls(root, playerId) {
   bindMarkerToolbar(root);
+  bindHandHoverSpread(root);
   root.querySelectorAll("button[data-action]").forEach((button) => {
     const action = button.dataset.action;
     if (button.dataset.player && button.dataset.player !== playerId && action !== "open-zone") return;
@@ -1137,12 +1167,26 @@ function bindPlayerControls(root, playerId) {
     }
   });
   root.querySelectorAll(".card[draggable='true']").forEach((cardEl) => {
-    cardEl.addEventListener("dragstart", (event) => handleDragStart(event, cardEl));
+    cardEl.addEventListener("dragstart", (event) => {
+      if (!cardEl.classList.contains("dragging")) handleDragStart(event, cardEl);
+    });
     cardEl.addEventListener("dragend", () => clearDragState());
   });
+  if (!root.dataset.cardDragDelegateBound) {
+    root.dataset.cardDragDelegateBound = "true";
+    root.addEventListener("dragstart", handleDelegatedCardDragStart, true);
+  }
   root.querySelectorAll(".library-block[draggable='true']").forEach((libraryEl) => {
     libraryEl.addEventListener("dragstart", (event) => handleLibraryDragStart(event, libraryEl));
     libraryEl.addEventListener("dragend", () => clearDragState());
+  });
+  root.querySelectorAll(".extra-block[draggable='true']").forEach((extraEl) => {
+    extraEl.addEventListener("dragstart", (event) => handleExtraDragStart(event, extraEl));
+    extraEl.addEventListener("dragend", () => clearDragState());
+  });
+  root.querySelectorAll(".compact-zone-block[draggable='true'][data-zone='graveyard'], .compact-zone-block[draggable='true'][data-zone='exile']").forEach((zoneEl) => {
+    zoneEl.addEventListener("dragstart", (event) => handleStackZoneDragStart(event, zoneEl));
+    zoneEl.addEventListener("dragend", () => clearDragState());
   });
   root.querySelectorAll(".battlefield-canvas").forEach((canvasEl) => {
     canvasEl.addEventListener("dragover", handleDragOver);
@@ -1155,6 +1199,39 @@ function bindPlayerControls(root, playerId) {
     dropEl.addEventListener("dragleave", () => dropEl.classList.remove("drag-over"));
     dropEl.addEventListener("drop", (event) => handleZoneDrop(event, dropEl));
   });
+}
+
+function bindHandHoverSpread(root) {
+  root.querySelectorAll(".self-hand.hand-strip").forEach((strip) => {
+    strip.addEventListener("pointerover", (event) => {
+      const cardEl = event.target.closest?.(".card[data-zone='hand']");
+      if (!cardEl || !strip.contains(cardEl)) return;
+      spreadCardsBeforeHovered(strip, cardEl);
+    });
+    strip.addEventListener("pointerleave", () => clearHandHoverSpread(strip));
+    strip.addEventListener("dragstart", () => clearHandHoverSpread(strip));
+  });
+}
+
+function spreadCardsBeforeHovered(strip, hoveredCard) {
+  const cards = [...strip.querySelectorAll(".card[data-zone='hand']")];
+  const hoveredIndex = cards.indexOf(hoveredCard);
+  cards.forEach((cardEl, index) => {
+    cardEl.classList.toggle("hand-hover-before", hoveredIndex > 0 && index < hoveredIndex);
+  });
+}
+
+function clearHandHoverSpread(strip) {
+  strip.querySelectorAll(".hand-hover-before").forEach((cardEl) => {
+    cardEl.classList.remove("hand-hover-before");
+  });
+}
+
+function handleDelegatedCardDragStart(event) {
+  const cardEl = event.target.closest?.(".card[draggable='true']");
+  if (!cardEl || event.currentTarget.contains(cardEl) === false) return;
+  if (cardEl.classList.contains("dragging")) return;
+  handleDragStart(event, cardEl);
 }
 
 function bindMarkerToolbar(root) {
@@ -1212,8 +1289,9 @@ function renderPanelZones(playerId, player) {
 
 function compactZoneButton(playerId, zone, label, cards, canDrop) {
   const dropAttr = canDrop ? ` data-drop-zone="${zone}"` : "";
+  const draggable = canDrop && cards.length ? ' draggable="true"' : "";
   return `
-    <button class="compact-zone-block" data-action="open-zone" data-zone="${zone}" data-player="${playerId}"${dropAttr}>
+    <button class="compact-zone-block" data-action="open-zone" data-zone="${zone}" data-player="${playerId}"${dropAttr}${draggable}>
       <span>${label}</span>
       <strong>${cards.length}</strong>
     </button>`;
@@ -1222,52 +1300,44 @@ function compactZoneButton(playerId, zone, label, cards, canDrop) {
 function libraryZone(playerId, cards, canControl) {
   const draggable = canControl && cards.length ? ' draggable="true"' : "";
   const dropAttr = canControl ? ' data-drop-zone="library"' : "";
+  const shuffleButton = canControl ? '<button class="zone-mini-button" data-action="shuffle-library" type="button">洗牌</button>' : "";
   return `
     <div class="library-zone">
       <button class="zone-block library-block" data-action="open-zone" data-zone="library" data-player="${playerId}"${dropAttr}${draggable}>
         <span>牌库</span>
         <strong>${cards.length}</strong>
       </button>
+      ${shuffleButton}
     </div>`;
+}
+
+function extraZone(playerId, entries, canControl) {
+  const draggable = canControl && entries.length ? ' draggable="true"' : "";
+  return `
+    <button class="zone-block extra-block" data-action="open-zone" data-zone="extra" data-player="${playerId}"${draggable}>
+      <span>额外</span>
+      <strong>${entries.length}</strong>
+    </button>`;
 }
 
 function renderHandRow(playerId, isOpponent) {
   const player = state.players[playerId];
   const canControl = seat === playerId;
   const handClass = `${isOpponent ? "opponent-hand" : "self-hand"} ${player.hand.length ? "" : "empty"}`;
+  const handStyle = handLayoutStyle(playerId);
   return `
     <div class="hand-row ${isOpponent ? "opponent-hand-row" : "self-hand-row"}">
-      <div class="hand-strip ${handClass}" data-player="${playerId}" data-drop-zone="hand">
+      <div class="hand-strip ${handClass}" data-player="${playerId}" data-hand-count="${player.hand.length}" data-drop-zone="hand"${handStyle}>
         ${renderHand(playerId, isOpponent, canControl)}
         <span class="hand-count">${player.hand.length}</span>
       </div>
       <aside class="hand-zone-stack" aria-label="${escapeHtml(player.name)}区域">
         ${libraryZone(playerId, player.library, canControl)}
-        ${compactZoneRow(playerId, player)}
-        ${renderInlineZone(playerId, canControl)}
+        ${extraZone(playerId, player.extraDeck, canControl)}
+        ${compactZoneButton(playerId, "graveyard", "墓地", player.graveyard, canControl)}
+        ${compactZoneButton(playerId, "exile", "放逐", player.exile, canControl)}
       </aside>
     </div>`;
-}
-
-function renderInlineZone(playerId, canControl) {
-  const zone = expandedZones[playerId];
-  if (!["graveyard", "exile"].includes(zone)) return "";
-  const player = state.players[playerId];
-  const cards = getZoneCards(player, zone);
-  return `
-    <section class="inline-zone-panel">
-      <div class="inline-zone-head">
-        <strong>${zoneLabel(zone)}</strong>
-        <span>${cards.length} 张</span>
-      </div>
-      <div class="inline-zone-cards ${cards.length ? "" : "empty"}">
-        ${
-          cards.length
-            ? cards.map((card) => renderCard(playerId, card, zone, canControl)).join("")
-            : ""
-        }
-      </div>
-    </section>`;
 }
 
 function renderHand(playerId, isOpponent, canControl) {
@@ -1283,6 +1353,72 @@ function renderHand(playerId, isOpponent, canControl) {
 
 function handCardStyle(index, total) {
   return `--hand-z: ${total - index};`;
+}
+
+function handLayoutStyle(playerId) {
+  const layout = handLayoutVars.get(playerId);
+  if (!layout) return "";
+  return ` style="--hand-overlap:${layout.overlap};--hand-hover-gap:${layout.hoverGap};--hand-first-hover-gap:${layout.firstHoverGap};"`;
+}
+
+function applyHandLayout(strip, playerId, layout) {
+  handLayoutVars.set(playerId, layout);
+  strip.classList.add("layout-syncing");
+  strip.style.setProperty("--hand-overlap", layout.overlap);
+  strip.style.setProperty("--hand-hover-gap", layout.hoverGap);
+  strip.style.setProperty("--hand-first-hover-gap", layout.firstHoverGap);
+  window.requestAnimationFrame(() => strip.classList.remove("layout-syncing"));
+}
+
+function syncHandFanLayout() {
+  document.querySelectorAll(".hand-strip").forEach((strip) => {
+    const cards = [...strip.querySelectorAll(".card")];
+    const count = cards.length;
+    const playerId = strip.dataset.player || "";
+    const fallbackLayout = {
+      overlap: "calc(var(--card-w) * -0.22)",
+      hoverGap: "clamp(20px, 3vw, 44px)",
+      firstHoverGap: "clamp(60px, 6vw, 96px)",
+    };
+    if (count <= 1) return;
+
+    const cardWidth = cards[0].getBoundingClientRect().width || 0;
+    const stripWidth = strip.clientWidth || strip.getBoundingClientRect().width || 0;
+    if (!cardWidth || !stripWidth) {
+      if (playerId && !handLayoutVars.has(playerId)) applyHandLayout(strip, playerId, fallbackLayout);
+      return;
+    }
+
+    const style = window.getComputedStyle(strip);
+    const paddingLeft = Number.parseFloat(style.paddingLeft) || 0;
+    const paddingRight = Number.parseFloat(style.paddingRight) || 0;
+    const countReserve = 42;
+    const layoutAvailable = Math.max(cardWidth, stripWidth - paddingLeft - paddingRight - countReserve);
+    const hoverReserve = Math.min(cardWidth * 0.45, Math.max(22, stripWidth * 0.04));
+    const available = Math.max(cardWidth, layoutAvailable - hoverReserve);
+    const rawGap = (available - cardWidth * count) / Math.max(1, count - 1);
+    const minVisibleStep = clampNumber(cardWidth * 0.16, 16, 24);
+    const minGap = minVisibleStep - cardWidth;
+    const maxGap = -cardWidth * 0.22;
+    const gap = clampNumber(rawGap, minGap, maxGap);
+    const hoverMax = Math.max(
+      6,
+      layoutAvailable - cardWidth * count - gap * Math.max(0, count - 2),
+    );
+    const hoverGap = clampNumber(hoverMax, 8, count > 14 ? 24 : 42);
+    const firstHoverGap = clampNumber(
+      Math.min(cardWidth * 0.9, hoverMax),
+      Math.max(hoverGap, 18),
+      count > 14 ? 64 : 104,
+    );
+
+    if (!playerId) return;
+    applyHandLayout(strip, playerId, {
+      overlap: `${gap.toFixed(2)}px`,
+      hoverGap: `${hoverGap.toFixed(2)}px`,
+      firstHoverGap: `${firstHoverGap.toFixed(2)}px`,
+    });
+  });
 }
 
 function renderCardBack(style = "") {
@@ -1501,12 +1637,15 @@ function renderCard(playerId, instance, zone, canControl, options = {}) {
   const styleAttr = options.style ? ` style="${options.style}"` : "";
   const cardKeyAttr = instance.cardKey ? ` data-card-key="${escapeHtml(instance.cardKey)}"` : "";
   return `
-    <article class="card ${instance.tapped ? "tapped" : ""} ${instance.isToken ? "token-card" : ""}" data-card-id="${instance.id}" data-player="${playerId}" data-zone="${zone}"${cardKeyAttr}${styleAttr}${draggable}>
+    <article class="card ${instance.tapped ? "tapped" : ""} ${instance.isToken ? "token-card" : ""} ${instance.faceDown ? "face-down-card" : ""} ${instance.flipAnimation ? "flip-reveal" : ""}" data-card-id="${instance.id}" data-player="${playerId}" data-zone="${zone}"${cardKeyAttr}${styleAttr}${draggable}>
       ${renderCardFace(card, instance)}
     </article>`;
 }
 
 function renderCardFace(card, instance = {}) {
+  if (instance.faceDown) {
+    return '<div class="card-back">Magic<br />Card</div>';
+  }
   if (card.image) {
     return `<img src="${escapeHtml(imageSrc(card.image))}" alt="${escapeHtml(card.name)}" loading="lazy" draggable="false" />`;
   }
@@ -1534,15 +1673,14 @@ function handleAction(button, playerId, root, options = {}) {
     });
     saveState(`${player.name} 重置全部永久物`);
   }
+  if (action === "shuffle-library") {
+    shuffle(player.library);
+    saveState(`${player.name} 洗牌`);
+  }
   if (action === "open-zone") {
     const zone = button.dataset.zone;
     const targetPlayer = button.dataset.player;
-    if (["graveyard", "exile"].includes(zone) && targetPlayer === seat) {
-      expandedZones[targetPlayer] = expandedZones[targetPlayer] === zone ? null : zone;
-      render();
-    } else {
-      openZone(targetPlayer, zone);
-    }
+    openZone(targetPlayer, zone);
   }
   if (action === "create-token") {
     createToken(playerId, root);
@@ -1557,6 +1695,9 @@ function handleAction(button, playerId, root, options = {}) {
 
 function moveCard(playerId, cardId, from, to, options = {}) {
   const player = state.players[playerId];
+  const sourceCard = findCardInZone(player, cardId, from);
+  if (!sourceCard) return;
+  if (sourceCard.isExtra && from.startsWith("battlefield") && (to === "hand" || to.startsWith("library"))) return;
   const card = removeCardFromZone(player, cardId, from);
   if (!card) return;
   const cardName = getCardInfo(card).name;
@@ -1577,6 +1718,8 @@ function moveCard(playerId, cardId, from, to, options = {}) {
     card.gridX = position.gridX;
     card.gridY = position.gridY;
     player.battlefield.cards.push(card);
+  } else if (to === "hand") {
+    player.hand.push(card);
   } else {
     player[to].unshift(card);
   }
@@ -1824,6 +1967,49 @@ function handleLibraryDragStart(event, libraryEl) {
   window.setTimeout(() => dragImage.remove(), 0);
 }
 
+function handleExtraDragStart(event, extraEl) {
+  const playerId = extraEl.dataset.player;
+  if (seat !== playerId || !state.players[playerId]?.extraDeck?.length) {
+    event.preventDefault();
+    return;
+  }
+  extraEl.classList.add("dragging");
+  setZoneSelectionDragPayload(event, {
+    playerId,
+    from: "extra",
+  });
+}
+
+function handleStackZoneDragStart(event, zoneEl) {
+  const playerId = zoneEl.dataset.player;
+  const zone = zoneEl.dataset.zone;
+  if (seat !== playerId || !["graveyard", "exile"].includes(zone) || !getZoneCards(state.players[playerId], zone).length) {
+    event.preventDefault();
+    return;
+  }
+  zoneEl.classList.add("dragging");
+  setZoneSelectionDragPayload(event, {
+    playerId,
+    from: zone,
+  });
+}
+
+function setZoneSelectionDragPayload(event, payloadData) {
+  const rect = event.currentTarget.getBoundingClientRect();
+  const payload = JSON.stringify({
+    type: "zone-select",
+    offsetX: rect.width / 2,
+    offsetY: rect.height / 2,
+    ...payloadData,
+  });
+  const dragImage = createCardBackDragImage();
+  event.dataTransfer.effectAllowed = "move";
+  event.dataTransfer.setData("application/json", payload);
+  event.dataTransfer.setData("text/plain", payload);
+  event.dataTransfer.setDragImage(dragImage, dragImage.offsetWidth / 2, dragImage.offsetHeight / 2);
+  window.setTimeout(() => dragImage.remove(), 0);
+}
+
 function handleDragOver(event) {
   event.preventDefault();
   event.currentTarget.classList.add("drag-over");
@@ -1845,12 +2031,16 @@ function readDragPayload(event) {
   }
 }
 
-function handleBattlefieldDrop(event, canvasEl) {
+async function handleBattlefieldDrop(event, canvasEl) {
   event.preventDefault();
   canvasEl.classList.remove("drag-over");
   try {
     const payload = readDragPayload(event);
     if (!payload || ![canvasEl.dataset.self, canvasEl.dataset.opponent].includes(payload.playerId) || seat !== payload.playerId) return;
+    if (payload.type === "zone-select") {
+      await handleZoneSelectionBattlefieldDrop(event, payload, canvasEl);
+      return;
+    }
     const player = state.players[payload.playerId];
     const card = findCardInZone(player, payload.cardId, payload.from);
     if (!card) return;
@@ -1869,6 +2059,10 @@ async function handleZoneDrop(event, dropEl) {
     if (!payload || payload.playerId !== dropEl.dataset.player || seat !== payload.playerId) return;
     const to = dropEl.dataset.dropZone;
     if (!to || to === payload.from) return;
+    if (payload.type === "zone-select") {
+      await handleZoneSelectionZoneDrop(payload, to);
+      return;
+    }
     const player = state.players[payload.playerId];
     const card = findCardInZone(player, payload.cardId, payload.from);
     if (!card) return;
@@ -1878,6 +2072,84 @@ async function handleZoneDrop(event, dropEl) {
   } finally {
     clearDragState();
   }
+}
+
+async function handleZoneSelectionBattlefieldDrop(event, payload, canvasEl) {
+  if (!["extra", "graveyard", "exile"].includes(payload.from)) return;
+  const player = state.players[payload.playerId];
+  const placeholder = makeFaceDownPlaceholder();
+  const position = battlefieldDropPosition(event, payload, canvasEl, placeholder);
+  placeholder.gridX = position.gridX;
+  placeholder.gridY = position.gridY;
+  player.battlefield.cards.push(placeholder);
+  render({ captureLayout: false });
+
+  const selection = await chooseZoneCard(payload.playerId, payload.from);
+  if (!selection) {
+    removeCardFromZone(player, placeholder.id, "battlefield");
+    render({ captureLayout: false });
+    return;
+  }
+  const livePlaceholder = findCardInZone(player, placeholder.id, "battlefield");
+  if (!livePlaceholder) return;
+  const selectedCard = payload.from === "extra"
+    ? makeExtraDeckCard(selection.cardKey)
+    : takeZoneSelectionCard(player, payload.from, selection);
+  if (!selectedCard) {
+    removeCardFromZone(player, placeholder.id, "battlefield");
+    render({ captureLayout: false });
+    return;
+  }
+  revealPlaceholderCard(livePlaceholder, selectedCard);
+  saveState(`${player.name} 将 ${getCardInfo(livePlaceholder).name} 移到战场`);
+  scheduleFlipCleanup(livePlaceholder.id);
+}
+
+async function handleZoneSelectionZoneDrop(payload, to) {
+  if (!["graveyard", "exile"].includes(payload.from)) return;
+  if (!["hand", "library", "graveyard", "exile"].includes(to) || to === payload.from) return;
+  const player = state.players[payload.playerId];
+
+  if (to === "hand") {
+    const placeholder = makeFaceDownPlaceholder();
+    player.hand.push(placeholder);
+    render({ captureLayout: false });
+    const selection = await chooseZoneCard(payload.playerId, payload.from);
+    const candidate = findZoneSelectionCard(player, payload.from, selection);
+    if (!candidate || candidate.isExtra) {
+      removeCardFromZone(player, placeholder.id, "hand");
+      render({ captureLayout: false });
+      return;
+    }
+    const selectedCard = takeZoneSelectionCard(player, payload.from, selection);
+    if (!selectedCard) {
+      removeCardFromZone(player, placeholder.id, "hand");
+      render({ captureLayout: false });
+      return;
+    }
+    revealPlaceholderCard(placeholder, selectedCard);
+    saveState(`${player.name} 将 ${getCardInfo(placeholder).name} 从${zoneLabel(payload.from)}移到手牌`);
+    scheduleFlipCleanup(placeholder.id);
+    return;
+  }
+
+  const selection = await chooseZoneCard(payload.playerId, payload.from);
+  const candidate = findZoneSelectionCard(player, payload.from, selection);
+  if (!candidate) return;
+  if (to === "library") {
+    if (candidate.isExtra) return;
+    const destination = await chooseLibraryDestination(payload.playerId, candidate);
+    if (!destination) return;
+    const selectedCard = takeZoneSelectionCard(player, payload.from, selection);
+    if (!selectedCard) return;
+    putCardInZone(player, selectedCard, destination);
+    saveState(`${player.name} 将 ${getCardInfo(selectedCard).name} 从${zoneLabel(payload.from)}移到${zoneLabel(destination)}`);
+    return;
+  }
+  const selectedCard = takeZoneSelectionCard(player, payload.from, selection);
+  if (!selectedCard) return;
+  putCardInZone(player, selectedCard, to);
+  saveState(`${player.name} 将 ${getCardInfo(selectedCard).name} 从${zoneLabel(payload.from)}移到${zoneLabel(to)}`);
 }
 
 function chooseLibraryDestination(playerId, card) {
@@ -1918,8 +2190,13 @@ function chooseLibraryDestination(playerId, card) {
     dialog.addEventListener("click", handleClick);
     dialog.addEventListener("cancel", handleCancel);
     dialog.addEventListener("close", handleClose);
-    dialog.showModal();
+    showDialog(dialog);
   });
+}
+
+function showDialog(dialog) {
+  if (!dialog || dialog.open) return;
+  dialog.showModal();
 }
 
 function battlefieldDropPosition(event, payload, canvasEl, card) {
@@ -2035,16 +2312,28 @@ function openZone(playerId, zone) {
   const cards = getZoneCards(player, zone);
   const canControl = seat === playerId;
   els.zoneTitle.textContent = `${player.name} - ${zoneLabel(zone)}`;
-  els.zoneMeta.textContent = `${cards.length} 张`;
+  els.zoneMeta.textContent = `${zone === "extra" ? player.extraDeck.length : cards.length} 张`;
   if (zone === "library") {
     els.zoneCards.innerHTML = renderLibraryList(player);
     bindLibraryListCards(els.zoneCards);
-    els.zoneDialog.showModal();
+    showDialog(els.zoneDialog);
+    return;
+  }
+  if (zone === "extra") {
+    els.zoneCards.innerHTML = renderExtraList(player);
+    bindLibraryListCards(els.zoneCards);
+    showDialog(els.zoneDialog);
+    return;
+  }
+  if (["graveyard", "exile"].includes(zone)) {
+    els.zoneCards.innerHTML = renderOrderedZoneList(player, zone);
+    bindZoneInstanceListCards(els.zoneCards);
+    showDialog(els.zoneDialog);
     return;
   }
   if (zone === "hand" && !canControl) {
     els.zoneCards.innerHTML = cards.map(renderCardBack).join("");
-    els.zoneDialog.showModal();
+    showDialog(els.zoneDialog);
     return;
   }
   els.zoneCards.innerHTML = cards
@@ -2067,7 +2356,7 @@ function openZone(playerId, zone) {
     }
   });
   updateRelationSelectionUi();
-  els.zoneDialog.showModal();
+  showDialog(els.zoneDialog);
 }
 
 function openCard(cardId) {
@@ -2103,13 +2392,14 @@ function openCardDetail({ englishCard, searchName, instance = null }) {
     language: "en",
     loadingChinese: false,
     chineseFailed: false,
+    flipAnimation: false,
     englishCard,
     chineseCard: chineseDetailCache.get(normalizeDetailSearchName(searchName)) || null,
     searchName,
     instance,
   };
   renderCardDetail();
-  els.cardDialog.showModal();
+  showDialog(els.cardDialog);
 }
 
 function renderCardDetail() {
@@ -2135,11 +2425,13 @@ async function toggleCardDetailLanguage() {
   if (!cardDetailState) return;
   if (cardDetailState.language === "zh" && cardDetailState.chineseCard) {
     cardDetailState.language = "en";
+    cardDetailState.flipAnimation = true;
     renderCardDetail();
     return;
   }
   if (cardDetailState.chineseCard) {
     cardDetailState.language = "zh";
+    cardDetailState.flipAnimation = true;
     renderCardDetail();
     return;
   }
@@ -2155,6 +2447,7 @@ async function toggleCardDetailLanguage() {
   if (chineseCard) {
     cardDetailState.chineseCard = chineseCard;
     cardDetailState.language = "zh";
+    cardDetailState.flipAnimation = true;
     chineseDetailCache.set(normalizeDetailSearchName(searchName), chineseCard);
   } else {
     cardDetailState.chineseFailed = true;
@@ -2198,12 +2491,97 @@ function findCardInZone(player, cardId, zone) {
   return getZoneCards(player, zone).find((card) => card.id === cardId);
 }
 
+function findFirstCardByKey(player, zone, cardKey) {
+  return getZoneCards(player, zone).find((card) => card.cardKey === cardKey);
+}
+
 function removeCardFromZone(player, cardId, zone) {
   const source = getZoneCards(player, zone);
   const index = source.findIndex((card) => card.id === cardId);
   if (index < 0) return null;
   const [card] = source.splice(index, 1);
   return card;
+}
+
+function takeFirstCardByKey(player, zone, cardKey) {
+  const source = getZoneCards(player, zone);
+  const index = source.findIndex((card) => card.cardKey === cardKey);
+  if (index < 0) return null;
+  const [card] = source.splice(index, 1);
+  return card;
+}
+
+function findZoneSelectionCard(player, zone, selection) {
+  if (!selection) return null;
+  if (selection.cardId) return findCardInZone(player, selection.cardId, zone);
+  if (selection.cardKey) return findFirstCardByKey(player, zone, selection.cardKey);
+  return null;
+}
+
+function takeZoneSelectionCard(player, zone, selection) {
+  if (!selection) return null;
+  if (selection.cardId) return removeCardFromZone(player, selection.cardId, zone);
+  if (selection.cardKey) return takeFirstCardByKey(player, zone, selection.cardKey);
+  return null;
+}
+
+function putCardInZone(player, card, zone) {
+  card.faceDown = false;
+  card.flipAnimation = false;
+  card.tapped = zone.startsWith("battlefield") ? card.tapped : false;
+  if (zone === "library" || zone === "library-top") {
+    player.library.unshift(card);
+  } else if (zone === "library-bottom") {
+    player.library.push(card);
+  } else if (zone === "library-random") {
+    const index = Math.floor(Math.random() * (player.library.length + 1));
+    player.library.splice(index, 0, card);
+  } else if (zone === "hand") {
+    player.hand.push(card);
+  } else {
+    player[zone].unshift(card);
+  }
+}
+
+function makeFaceDownPlaceholder() {
+  return {
+    id: crypto.randomUUID(),
+    cardKey: "",
+    tapped: false,
+    faceDown: true,
+  };
+}
+
+function makeExtraDeckCard(cardKey) {
+  return {
+    id: crypto.randomUUID(),
+    cardKey,
+    tapped: false,
+    isExtra: true,
+  };
+}
+
+function revealPlaceholderCard(placeholder, selectedCard) {
+  const position = {
+    gridX: placeholder.gridX,
+    gridY: placeholder.gridY,
+  };
+  Object.keys(placeholder).forEach((key) => delete placeholder[key]);
+  Object.assign(placeholder, {
+    ...selectedCard,
+    ...position,
+    faceDown: false,
+    flipAnimation: true,
+  });
+}
+
+function scheduleFlipCleanup(cardId) {
+  window.setTimeout(() => {
+    const instance = findInstance(cardId);
+    if (!instance?.flipAnimation) return;
+    delete instance.flipAnimation;
+    saveState(null, { captureLayout: false, undo: false });
+  }, 700);
 }
 
 function imageSrc(url) {
@@ -2213,6 +2591,7 @@ function imageSrc(url) {
 function zoneLabel(zone) {
   return {
     library: "牌库",
+    extra: "额外",
     hand: "手牌",
     battlefield: "战场",
     "battlefield:lands": "地牌区",
@@ -2249,9 +2628,97 @@ function renderLibraryList(player) {
     </div>`;
 }
 
+function renderExtraList(player) {
+  const rows = normalizeExtraDeckList(player.extraDeck).map((entry) => ({ name: entry.name, remaining: null }));
+  return renderCardListRows(rows);
+}
+
+function renderOrderedZoneList(player, zone) {
+  const cards = getZoneCards(player, zone);
+  if (!cards.length) return "";
+  return `
+    <div class="library-list">
+      ${cards
+        .map((instance) => {
+          const card = getCardInfo(instance);
+          return `
+            <button class="library-card" type="button" data-card-id="${escapeHtml(instance.id)}" aria-label="查看 ${escapeHtml(card.name)} 大图">
+              <div class="library-face">
+                ${renderLibraryFace(card, null)}
+              </div>
+            </button>`;
+        })
+        .join("")}
+    </div>`;
+}
+
+function renderCardListRows(rows) {
+  if (!rows.length) return "";
+  return `
+    <div class="library-list">
+      ${rows
+        .map((entry) => {
+          const card = state.catalog[entry.name] || { name: entry.name, typeLine: "", image: "" };
+          return `
+            <button class="library-card" type="button" data-card-key="${escapeHtml(entry.name)}" data-remaining="${entry.remaining ?? ""}" aria-label="查看 ${escapeHtml(card.name)} 大图">
+              <div class="library-face">
+                ${renderLibraryFace(card, entry.remaining)}
+              </div>
+            </button>`;
+        })
+        .join("")}
+    </div>`;
+}
+
 function bindLibraryListCards(root) {
   root.querySelectorAll(".library-card[data-card-key]").forEach((button) => {
     button.addEventListener("click", () => openLibraryCard(button.dataset.cardKey));
+  });
+}
+
+function bindZoneInstanceListCards(root) {
+  root.querySelectorAll(".library-card[data-card-id]").forEach((button) => {
+    button.addEventListener("click", () => openCard(button.dataset.cardId));
+  });
+}
+
+function chooseZoneCard(playerId, zone) {
+  const player = state.players[playerId];
+  const cards = getZoneCards(player, zone);
+  const rows = zone === "extra"
+    ? normalizeExtraDeckList(player.extraDeck).map((entry) => ({ name: entry.name, remaining: null }))
+    : [];
+  if (zone === "extra" ? !rows.length : !cards.length) return Promise.resolve(null);
+
+  els.zoneTitle.textContent = `${player.name} - 选择${zoneLabel(zone)}`;
+  els.zoneMeta.textContent = zone === "extra" ? `${rows.length} 种` : `${cards.length} 张`;
+  els.zoneCards.innerHTML = zone === "extra" ? renderCardListRows(rows) : renderOrderedZoneList(player, zone);
+
+  return new Promise((resolve) => {
+    let settled = false;
+    const cleanup = () => {
+      els.zoneCards.removeEventListener("click", handleClick);
+      els.zoneDialog.removeEventListener("close", handleClose);
+    };
+    const finish = (selection) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      if (els.zoneDialog.open) els.zoneDialog.close();
+      resolve(selection || null);
+    };
+    const handleClick = (event) => {
+      const button = event.target.closest(".library-card[data-card-key], .library-card[data-card-id]");
+      if (!button) return;
+      finish(button.dataset.cardId ? { cardId: button.dataset.cardId } : { cardKey: button.dataset.cardKey });
+    };
+    const handleClose = () => {
+      finish(null);
+    };
+
+    els.zoneCards.addEventListener("click", handleClick);
+    els.zoneDialog.addEventListener("close", handleClose);
+    showDialog(els.zoneDialog);
   });
 }
 
@@ -2259,7 +2726,7 @@ function renderLibraryFace(card, remaining) {
   const face = card.image
     ? `<img src="${escapeHtml(imageSrc(card.image))}" alt="${escapeHtml(card.name)}" loading="lazy" draggable="false" />`
     : `<div class="card-back">Magic<br />Card</div>`;
-  return `${face}<span class="library-count">x${remaining}</span>`;
+  return `${face}${Number.isFinite(remaining) ? `<span class="library-count">x${remaining}</span>` : ""}`;
 }
 
 function countCardsByKey(cards) {
@@ -2271,13 +2738,16 @@ function countCardsByKey(cards) {
 }
 
 function importDeck(playerId, raw) {
-  const entries = normalizeDeckList(parseDeckList(raw)).map((entry) => [entry.name, entry.count]);
-  if (!entries.length) return;
+  const parsed = parseDeckList(raw);
+  const entries = normalizeDeckList(parsed.main).map((entry) => [entry.name, entry.count]);
+  const extraEntries = normalizeExtraDeckList(parsed.extra);
+  if (!entries.length && !extraEntries.length) return;
   const player = state.players[playerId];
-  for (const [name] of entries) {
+  for (const name of [...entries.map(([entryName]) => entryName), ...extraEntries.map((entry) => entry.name)]) {
     if (!state.catalog[name]) state.catalog[name] = { name, typeLine: "", image: "" };
   }
   player.library = buildDeck(entries);
+  player.extraDeck = extraEntries;
   player.deckList = normalizeDeckList(entries);
   shuffle(player.library);
   player.hand = player.library.splice(0, 7);
@@ -2286,32 +2756,42 @@ function importDeck(playerId, raw) {
   player.exile = [];
   hydrateCatalogRunning = true;
   saveState(`${player.name} 导入牌库并抓起手七张`);
-  refreshCatalogEntries(entries.map(([name]) => name)).finally(() => {
+  refreshCatalogEntries([...entries.map(([name]) => name), ...extraEntries.map((entry) => entry.name)]).finally(() => {
     hydrateCatalogRunning = false;
     hydrateMissingCatalogImages();
   });
 }
 
 function parseDeckList(raw) {
-  const entries = [];
-  let inSideboard = false;
+  const main = [];
+  const extra = [];
+  let section = "main";
   raw.split("\n").forEach((rawLine) => {
     const line = rawLine.replace(/\s+\/\/.*$/, "").trim();
     if (!line || line.startsWith("//")) return;
-    if (/^sideboard:?$/i.test(line)) {
-      inSideboard = true;
+    if (/^(extra|extras|extra deck|额外|额外牌组|额外卡组):?$/i.test(line)) {
+      section = "extra";
+      return;
+    }
+    if (/^sideboard:?$/i.test(line) || /^sb:?$/i.test(line)) {
+      section = "sideboard";
       return;
     }
     if (/^(deck|commander):?$/i.test(line)) return;
     if (/^SB:\s*\d+/i.test(line)) return;
-    if (inSideboard) return;
+    if (section === "sideboard") return;
 
     const match = line.match(/^(\d+)x?\s+(.+)$/i);
+    if (section === "extra") {
+      const name = cleanDeckCardName(match ? match[2] : line);
+      if (name) extra.push(name);
+      return;
+    }
     const count = match ? Number(match[1]) : 1;
     const name = cleanDeckCardName(match ? match[2] : line);
-    if (name && count > 0) entries.push([name, count]);
+    if (name && count > 0) main.push([name, count]);
   });
-  return entries;
+  return { main, extra };
 }
 
 function cleanDeckCardName(name) {
@@ -2489,7 +2969,9 @@ function refreshRenderedCatalogEntry(key) {
     if (cardEl.dataset.cardKey !== key) return;
     const face = cardEl.querySelector(".library-face");
     if (!face) return;
-    face.innerHTML = renderLibraryFace(card, Number(cardEl.dataset.remaining) || 0);
+    const rawRemaining = cardEl.dataset.remaining;
+    const remaining = rawRemaining === "" ? null : Number(rawRemaining);
+    face.innerHTML = renderLibraryFace(card, Number.isFinite(remaining) ? remaining : null);
   });
 }
 
@@ -2499,59 +2981,36 @@ function catalogSearchName(key, card) {
 }
 
 async function handleLookup() {
-  const parsed = parseLookupInput(els.lookupInput.value);
-  if (!parsed.query && !parsed.mode) {
-    renderLookupMessage("输入牌名或机制");
+  const query = String(els.lookupInput.value || "").trim();
+  if (!query) {
+    renderLookupMessage("输入牌名、机制，或 翻译: trample");
     return;
   }
-  if (!parsed.query) {
-    renderLookupMessage(`${lookupModeLabel(parsed.mode)} 查询：请输入内容`);
+
+  const translationQuery = parseTranslationLookup(query);
+  if (translationQuery) {
+    renderTranslationLookup(translationQuery);
     return;
   }
-  if (parsed.mode === "cards") {
-    await lookupCardByName(parsed.query);
-    return;
-  }
-  if (parsed.mode === "mechanics") {
-    lookupMechanicOnly(parsed.query);
-    return;
-  }
-  if (parsed.mode === "translate") {
-    renderTranslationLookup(parsed.query);
+
+  const mechanic = findMechanic(query, { exact: true });
+  if (mechanic) {
+    renderMechanicLookup(mechanic);
     return;
   }
 
   renderLookupMessage("正在查询卡片...");
-  const card = await fetchExactCard(parsed.query);
+  const card = await fetchExactCard(query);
   if (card) {
     renderCardLookup(card);
     return;
   }
-
-  const fuzzyMechanic = findMechanic(parsed.query, { exact: false });
-  if (fuzzyMechanic) {
-    renderMechanicLookup(fuzzyMechanic);
-    return;
-  }
-  renderLookupMessage(`没有找到“${parsed.query}”。可以尝试英文牌名或常见机制名。`);
+  renderLookupMessage(`没有找到“${query}”。可以尝试英文牌名或常见机制名。`);
 }
 
-function parseLookupInput(raw) {
-  const text = String(raw || "").trim();
-  const match = text.match(/^(cards?|mechanics?|translate|卡片|机制|翻译)\s*[:：]\s*(.*)$/i);
-  if (!match) return { mode: null, query: text };
-  return {
-    mode: normalizeLookupMode(match[1]),
-    query: match[2].trim(),
-  };
-}
-
-function normalizeLookupMode(value) {
-  const mode = String(value || "").toLowerCase();
-  if (mode === "card" || mode === "cards" || value === "卡片") return "cards";
-  if (mode === "mechanic" || mode === "mechanics" || value === "机制") return "mechanics";
-  if (mode === "translate" || value === "翻译") return "translate";
-  return null;
+function parseTranslationLookup(query) {
+  const match = String(query).match(/^(?:translate|translation|trans|翻译)\s*[:：]\s*(.+)$/i);
+  return match ? match[1].trim() : "";
 }
 
 async function lookupCardByName(query) {
@@ -2729,8 +3188,15 @@ function rarityLabel(rarity) {
 }
 
 function renderDetailCard(card, instance = null) {
+  const flipClass = cardDetailState?.flipAnimation ? " flip-reveal" : "";
+  if (cardDetailState?.flipAnimation) {
+    window.setTimeout(() => {
+      if (!cardDetailState) return;
+      cardDetailState.flipAnimation = false;
+    }, 700);
+  }
   return `
-    <article class="card">
+    <article class="card${flipClass}">
       ${
         card.image
           ? `<img src="${escapeHtml(imageSrc(card.image))}" alt="${escapeHtml(card.name)}" loading="lazy" draggable="false" />`
@@ -2921,25 +3387,6 @@ function rollDie(sides) {
   recordRandomResult(`D${sides}`, Math.floor(Math.random() * sides) + 1);
 }
 
-function lookupModeLabel(mode) {
-  return {
-    cards: "卡片",
-    mechanics: "机制",
-    translate: "翻译",
-  }[mode] || "自动";
-}
-
-function updateLookupSuggestions() {
-  const shouldShow = document.activeElement === els.lookupInput && !els.lookupInput.value.trim();
-  els.lookupSuggestions.classList.toggle("open", shouldShow);
-}
-
-function applyLookupSuggestion(prefix) {
-  els.lookupInput.value = prefix;
-  els.lookupInput.focus();
-  updateLookupSuggestions();
-}
-
 els.seatToggle.addEventListener("click", cycleSeat);
 els.timerToggle.addEventListener("click", toggleTimer);
 els.timerReset.addEventListener("click", resetTimer);
@@ -2963,17 +3410,6 @@ els.lookupInput.addEventListener("keydown", (event) => {
   if (event.key !== "Enter") return;
   event.preventDefault();
   handleLookup();
-});
-els.lookupInput.addEventListener("focus", updateLookupSuggestions);
-els.lookupInput.addEventListener("input", updateLookupSuggestions);
-els.lookupInput.addEventListener("blur", () => {
-  window.setTimeout(updateLookupSuggestions, 120);
-});
-els.lookupSuggestions.querySelectorAll("[data-lookup-prefix]").forEach((button) => {
-  button.addEventListener("mousedown", (event) => {
-    event.preventDefault();
-    applyLookupSuggestion(button.dataset.lookupPrefix);
-  });
 });
 
 els.relationActionSelect.addEventListener("change", updateRelationCustomInput);
@@ -3006,6 +3442,8 @@ window.addEventListener("storage", (event) => {
     // Ignore malformed localStorage writes from other tabs.
   }
 });
+
+window.addEventListener("resize", syncHandFanLayout);
 
 render();
 window.setInterval(renderTimer, 500);
