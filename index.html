@@ -4,10 +4,43 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>MTG Online Table</title>
-    <link rel="stylesheet" href="./styles.css?v=20260614-11" />
+    <link rel="stylesheet" href="./styles.css?v=20260616-1" />
   </head>
   <body>
-    <div id="app" class="app-shell">
+    <section id="lobby" class="lobby-screen">
+      <div class="lobby-card">
+        <div class="lobby-head">
+          <span class="mark">MTG</span>
+          <div>
+            <h1>选择牌桌</h1>
+            <p>创建一个牌桌，或输入牌桌号加入正在进行的对局。</p>
+          </div>
+        </div>
+
+        <div class="lobby-grid">
+          <form id="createTableForm" class="lobby-panel">
+            <h2>创建牌桌</h2>
+            <input id="createTableId" type="text" maxlength="24" placeholder="牌桌号，留空自动生成" autocomplete="off" />
+            <input id="createTablePassword" type="password" placeholder="密码，可为空" autocomplete="new-password" />
+            <button type="submit">创建并进入</button>
+          </form>
+
+          <form id="searchTableForm" class="lobby-panel">
+            <h2>查找牌桌</h2>
+            <div class="lobby-search-row">
+              <input id="tableSearchInput" type="search" placeholder="输入牌桌号" autocomplete="off" />
+              <button type="submit">查询</button>
+            </div>
+            <button id="refreshTables" type="button">刷新大厅</button>
+          </form>
+        </div>
+
+        <div id="lobbyMessage" class="lobby-message" role="status"></div>
+        <div id="tableList" class="table-list" aria-live="polite"></div>
+      </div>
+    </section>
+
+    <div id="app" class="app-shell" hidden>
       <header class="topbar">
         <details class="top-drawer">
           <summary>
@@ -23,9 +56,9 @@
               </div>
               <div id="syncStatus" class="sync-status" data-status="connecting">正在连接</div>
               <div class="session-actions">
-                <button id="seatToggle" type="button">视角：玩家一</button>
-                <button id="undoAction" type="button">撤销</button>
+                <button id="seatToggle" type="button">视角：P1</button>
                 <button id="resetGame" type="button">重置牌桌</button>
+                <button id="leaveTable" type="button">返回大厅</button>
               </div>
               <div class="random-tools">
                 <button id="flipCoin" type="button">硬币</button>
@@ -68,7 +101,6 @@
     </dialog>
 
     <dialog id="cardDialog" class="card-dialog">
-      <button id="closeCard" type="button" aria-label="关闭">X</button>
       <div id="cardDetail"></div>
     </dialog>
 
@@ -88,28 +120,6 @@
       </div>
     </dialog>
 
-    <div id="relationActionPopover" class="relation-action-popover" hidden>
-      <strong>记录操作</strong>
-      <p id="relationActionMeta"></p>
-      <select id="relationActionSelect" aria-label="选择操作">
-        <option value="指定目标">指定目标</option>
-        <option value="造成伤害">造成伤害</option>
-        <option value="攻击">攻击</option>
-        <option value="阻挡">阻挡</option>
-        <option value="结附">结附</option>
-        <option value="装备">装备</option>
-        <option value="复制">复制</option>
-        <option value="响应">响应</option>
-        <option value="指向">指向</option>
-        <option value="custom">自定义</option>
-      </select>
-      <input id="relationActionCustom" type="text" maxlength="30" placeholder="自定义操作" hidden />
-      <div class="relation-action-buttons">
-        <button id="relationActionConfirm" type="button">记录</button>
-        <button id="relationActionCancel" type="button">取消</button>
-      </div>
-    </div>
-
-    <script src="./app.js?v=20260614-11"></script>
+    <script src="./app.js?v=20260616-1"></script>
   </body>
 </html>

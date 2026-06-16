@@ -1,18 +1,25 @@
 const STORAGE_KEY = "mtg-online-table-state-v1";
-const PANEL_POSITION_KEY = "mtg-online-panel-positions-v1";
+const PANEL_POSITION_KEY = "mtg-online-panel-positions-v2";
 const MARKER_TOOLBAR_KEY = "mtg-online-marker-toolbar-v1";
-const STATE_VERSION = 18;
+const CLIENT_ID_KEY = "mtg-online-client-id-v1";
+const LAST_TABLES_KEY = "mtg-online-last-tables-v1";
+const STATE_VERSION = 19;
 const SCRYFALL_NAMED_URL = "https://api.scryfall.com/cards/named?exact=";
 const SCRYFALL_SEARCH_URL = "https://api.scryfall.com/cards/search?q=";
 const CARD_IMAGE_SOURCE = "scryfall";
+const TABLES_URL = "/api/tables";
+const TABLE_JOIN_URL = "/api/tables/join";
 const TABLE_STATE_URL = "/api/table/state";
+const TABLE_HEARTBEAT_URL = "/api/table/heartbeat";
+const TABLE_LEAVE_URL = "/api/table/leave";
 const TABLE_POLL_MS = 1000;
-const UNDO_STACK_LIMIT = 8;
+const TABLE_HEARTBEAT_MS = 15000;
 const BATTLE_GRID_SIZE = 13;
 const BATTLE_CARD_GRID_W = 14;
 const BATTLE_CARD_GRID_H = 20;
 const SOFT_ZONE_EXTRA_GRID = 2;
 const DEFAULT_VISIBLE_SOFT_ZONES = 1;
+const PLAYER_PANEL_DEFAULT_GAP = 12;
 const LEGACY_DEFAULT_BATTLEFIELD_HALF_HEIGHTS = [525, 528];
 const SCRYFALL_SYMBOL_BASE_URL = "https://svgs.scryfall.io/card-symbols/";
 const MANA_SYMBOL_URLS = {
@@ -43,8 +50,8 @@ const LEGACY_MARKER_KIND_MAP = {
 };
 const SEAT_ORDER = ["p1", "p2", "spectator"];
 const SEAT_LABELS = {
-  p1: "玩家一",
-  p2: "玩家二",
+  p1: "P1",
+  p2: "P2",
   spectator: "旁观",
 };
 const SYNC_LABELS = {
@@ -306,6 +313,10 @@ const pendingCardFetches = new Set();
 let hydrateCatalogRunning = false;
 let syncingRemote = false;
 let battlefieldResizeObserver = null;
+let activeTable = null;
+let tablePollTimer = null;
+let tableHeartbeatTimer = null;
+const clientId = loadClientId();
 const syncState = {
   status: "connecting",
   lastOkAt: null,
@@ -385,16 +396,26 @@ const sampleCatalog = {
 };
 
 const els = {
+  lobby: document.querySelector("#lobby"),
+  app: document.querySelector("#app"),
+  createTableForm: document.querySelector("#createTableForm"),
+  createTableId: document.querySelector("#createTableId"),
+  createTablePassword: document.querySelector("#createTablePassword"),
+  searchTableForm: document.querySelector("#searchTableForm"),
+  tableSearchInput: document.querySelector("#tableSearchInput"),
+  refreshTables: document.querySelector("#refreshTables"),
+  lobbyMessage: document.querySelector("#lobbyMessage"),
+  tableList: document.querySelector("#tableList"),
   seatToggle: document.querySelector("#seatToggle"),
   tableTimer: document.querySelector("#tableTimer"),
   timerToggle: document.querySelector("#timerToggle"),
   timerReset: document.querySelector("#timerReset"),
   syncStatus: document.querySelector("#syncStatus"),
-  undoAction: document.querySelector("#undoAction"),
   flipCoin: document.querySelector("#flipCoin"),
   rollD6: document.querySelector("#rollD6"),
   rollD20: document.querySelector("#rollD20"),
   resetGame: document.querySelector("#resetGame"),
+  leaveTable: document.querySelector("#leaveTable"),
   deckImport: document.querySelector("#deckImport"),
   importDeckTop: document.querySelector("#importDeckTop"),
   lookupInput: document.querySelector("#lookupInput"),
@@ -411,20 +432,12 @@ const els = {
   closeZone: document.querySelector("#closeZone"),
   cardDialog: document.querySelector("#cardDialog"),
   cardDetail: document.querySelector("#cardDetail"),
-  closeCard: document.querySelector("#closeCard"),
   libraryMoveDialog: document.querySelector("#libraryMoveDialog"),
   libraryMoveTitle: document.querySelector("#libraryMoveTitle"),
   libraryMoveMeta: document.querySelector("#libraryMoveMeta"),
-  relationActionPopover: document.querySelector("#relationActionPopover"),
-  relationActionMeta: document.querySelector("#relationActionMeta"),
-  relationActionSelect: document.querySelector("#relationActionSelect"),
-  relationActionCustom: document.querySelector("#relationActionCustom"),
-  relationActionConfirm: document.querySelector("#relationActionConfirm"),
-  relationActionCancel: document.querySelector("#relationActionCancel"),
 };
 
-let state = loadState();
-let lastCommittedSnapshot = snapshotStateForUndo(state);
+let state = makeInitialState();
 localStorage.removeItem("mtg-online-seat");
 let seat = normalizeSeat(sessionStorage.getItem("mtg-online-seat"));
 let lookupCardDetail = null;
@@ -435,7 +448,6 @@ const playerPanelOpen = { p1: true, p2: true };
 const playerPanelPositions = loadPanelPositions();
 const markerToolbarState = loadMarkerToolbarState();
 const handLayoutVars = new Map();
-let relationSelection = null;
 updateSeatToggle();
 
 function makeInitialState() {
@@ -443,12 +455,11 @@ function makeInitialState() {
     version: STATE_VERSION,
     updatedAt: Date.now(),
     timer: makeTimerState(),
-    undoStack: [],
     catalog: { ...sampleCatalog },
     log: ["牌桌已创建"],
     players: {
-      p1: makePlayer("玩家一"),
-      p2: makePlayer("玩家二"),
+      p1: makePlayer("P1"),
+      p2: makePlayer("P2"),
     },
   };
 }
@@ -486,8 +497,20 @@ function makeTimerState() {
   return { elapsedMs: 0, running: false, startedAt: null };
 }
 
-function loadState() {
-  const raw = localStorage.getItem(STORAGE_KEY);
+function loadClientId() {
+  const existing = localStorage.getItem(CLIENT_ID_KEY);
+  if (existing) return existing;
+  const next = crypto.randomUUID();
+  localStorage.setItem(CLIENT_ID_KEY, next);
+  return next;
+}
+
+function tableStorageKey(tableId = activeTable?.id) {
+  return tableId ? `${STORAGE_KEY}:${tableId}` : STORAGE_KEY;
+}
+
+function loadState(tableId = activeTable?.id) {
+  const raw = localStorage.getItem(tableStorageKey(tableId));
   if (!raw) return makeInitialState();
   try {
     const loaded = JSON.parse(raw);
@@ -497,8 +520,37 @@ function loadState() {
   }
 }
 
+function loadLastTables() {
+  try {
+    const value = JSON.parse(localStorage.getItem(LAST_TABLES_KEY) || "[]");
+    if (!Array.isArray(value)) return [];
+    return value
+      .map((entry) => (typeof entry === "string" ? { id: entry } : entry))
+      .filter((entry) => entry?.id)
+      .map((entry) => ({ id: String(entry.id), at: Number(entry.at) || 0 }));
+  } catch {
+    return [];
+  }
+}
+
+function saveLastTables(entries) {
+  localStorage.setItem(LAST_TABLES_KEY, JSON.stringify(entries.slice(0, 12)));
+}
+
+function markLastTable(tableId) {
+  const id = String(tableId || "").trim();
+  if (!id) return;
+  const next = [{ id, at: Date.now() }, ...loadLastTables().filter((entry) => entry.id !== id)];
+  saveLastTables(next);
+}
+
+function isLastPlayedTable(tableId) {
+  return loadLastTables().some((entry) => entry.id === tableId);
+}
+
 function loadPanelPositions() {
   try {
+    sessionStorage.removeItem("mtg-online-panel-positions-v1");
     const positions = JSON.parse(sessionStorage.getItem(PANEL_POSITION_KEY) || "{}");
     return positions && typeof positions === "object" ? positions : {};
   } catch {
@@ -508,6 +560,11 @@ function loadPanelPositions() {
 
 function savePanelPositions() {
   sessionStorage.setItem(PANEL_POSITION_KEY, JSON.stringify(playerPanelPositions));
+}
+
+function resetPanelPositions() {
+  Object.keys(playerPanelPositions).forEach((playerId) => delete playerPanelPositions[playerId]);
+  sessionStorage.removeItem(PANEL_POSITION_KEY);
 }
 
 function loadMarkerToolbarState() {
@@ -557,29 +614,15 @@ function formatTimer(ms) {
   return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 }
 
-function cloneJson(value) {
-  return JSON.parse(JSON.stringify(value));
-}
-
-function snapshotStateForUndo(sourceState) {
-  const snapshot = cloneJson(sourceState);
-  delete snapshot.undoStack;
-  return snapshot;
-}
-
-function normalizeUndoStack(stack) {
-  if (!Array.isArray(stack)) return [];
-  return stack
-    .filter((item) => item && typeof item === "object" && item.players)
-    .slice(0, UNDO_STACK_LIMIT)
-    .map((item) => snapshotStateForUndo(item));
-}
-
 function migrateState(loaded) {
   if (!loaded || !loaded.players) return makeInitialState();
   const previousVersion = Number(loaded.version) || 0;
-  loaded.players.p1 = normalizePlayerState(loaded.players.p1, "玩家一");
-  loaded.players.p2 = normalizePlayerState(loaded.players.p2, "玩家二");
+  loaded.players.p1 = normalizePlayerState(loaded.players.p1, "P1");
+  loaded.players.p2 = normalizePlayerState(loaded.players.p2, "P2");
+  if (previousVersion < 19) {
+    if (loaded.players.p1.name === "玩家一") loaded.players.p1.name = "P1";
+    if (loaded.players.p2.name === "玩家二") loaded.players.p2.name = "P2";
+  }
   loaded.catalog = normalizeCatalog(loaded.catalog);
   if (previousVersion < 16) {
     loaded.catalog = resetCatalogForEnglishImages(loaded.catalog);
@@ -589,7 +632,6 @@ function migrateState(loaded) {
   }
   loaded.log = Array.isArray(loaded.log) ? loaded.log : [];
   loaded.timer = normalizeTimerState(loaded.timer);
-  loaded.undoStack = normalizeUndoStack(loaded.undoStack);
   if (loaded.version !== STATE_VERSION) {
     loaded.version = STATE_VERSION;
   }
@@ -802,13 +844,21 @@ function normalizeMarkerKind(kind) {
   return MARKER_LIBRARY.some((item) => item.value === value) ? value : "energy";
 }
 
+function defaultPlayerName(playerId) {
+  return playerId === "p2" ? "P2" : "P1";
+}
+
+function sanitizePlayerName(value, playerId) {
+  const normalized = String(value || "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 24);
+  return normalized || defaultPlayerName(playerId);
+}
+
 function saveState(message, options = {}) {
   if (options.captureLayout !== false) {
     captureBattlefieldHeights();
-  }
-  state.undoStack = normalizeUndoStack(state.undoStack);
-  if (options.undo !== false && lastCommittedSnapshot) {
-    state.undoStack = [snapshotStateForUndo(lastCommittedSnapshot), ...state.undoStack].slice(0, UNDO_STACK_LIMIT);
   }
   state.updatedAt = Math.max(Date.now(), (Number(state.updatedAt) || 0) + 1);
   if (message) {
@@ -819,25 +869,27 @@ function saveState(message, options = {}) {
 }
 
 function persistState() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-  lastCommittedSnapshot = snapshotStateForUndo(state);
-  channel?.postMessage(state);
+  localStorage.setItem(tableStorageKey(), JSON.stringify(state));
+  channel?.postMessage({ tableId: activeTable?.id || "", state });
   publishTableState();
 }
 
 function persistLocalState() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-  lastCommittedSnapshot = snapshotStateForUndo(state);
+  localStorage.setItem(tableStorageKey(), JSON.stringify(state));
 }
 
 async function publishTableState() {
-  if (syncingRemote) return;
+  if (syncingRemote || !activeTable) return;
   try {
     const response = await fetch(TABLE_STATE_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ state }),
+      body: JSON.stringify({ tableId: activeTable.id, clientId, state }),
     });
+    if (response.status === 404) {
+      handleRemoteTableMissing();
+      return;
+    }
     if (response.status === 409) {
       setSyncStatus("connected");
       applyIncomingState(await fetchTableState());
@@ -855,8 +907,19 @@ async function publishTableState() {
 }
 
 async function fetchTableState() {
+  if (!activeTable) return null;
   try {
-    const response = await fetch(TABLE_STATE_URL, { cache: "no-store" });
+    const params = new URLSearchParams({ tableId: activeTable.id, clientId });
+    const response = await fetch(`${TABLE_STATE_URL}?${params}`, { cache: "no-store" });
+    if (response.status === 404) {
+      handleRemoteTableMissing();
+      return null;
+    }
+    if (response.status === 403) {
+      setSyncStatus("error");
+      setLobbyMessage("当前牌桌连接已失效，请从大厅重新输入密码进入。");
+      return null;
+    }
     if (!response.ok) {
       setSyncStatus("error");
       return null;
@@ -880,8 +943,7 @@ function applyIncomingState(incoming) {
   if (incomingVersion >= 9) {
     applyBattlefieldHeights(localBattlefieldHeights);
   }
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-  lastCommittedSnapshot = snapshotStateForUndo(state);
+  localStorage.setItem(tableStorageKey(), JSON.stringify(state));
   syncingRemote = false;
   render({ captureLayout: false });
   if (incomingVersion < STATE_VERSION) {
@@ -891,7 +953,10 @@ function applyIncomingState(incoming) {
 }
 
 async function startOnlineSync() {
+  if (!activeTable) return;
+  stopOnlineSync();
   const serverState = await fetchTableState();
+  if (!activeTable) return;
   if (serverState) {
     const serverVersion = Number(serverState.version) || 0;
     const applied = applyIncomingState(serverState);
@@ -901,10 +966,239 @@ async function startOnlineSync() {
   } else {
     publishTableState();
   }
-  window.setInterval(async () => {
+  tablePollTimer = window.setInterval(async () => {
     const incoming = await fetchTableState();
     applyIncomingState(incoming);
   }, TABLE_POLL_MS);
+  tableHeartbeatTimer = window.setInterval(sendTableHeartbeat, TABLE_HEARTBEAT_MS);
+  sendTableHeartbeat();
+}
+
+function stopOnlineSync() {
+  if (tablePollTimer) {
+    window.clearInterval(tablePollTimer);
+    tablePollTimer = null;
+  }
+  if (tableHeartbeatTimer) {
+    window.clearInterval(tableHeartbeatTimer);
+    tableHeartbeatTimer = null;
+  }
+}
+
+async function sendTableHeartbeat() {
+  if (!activeTable) return;
+  try {
+    const response = await fetch(TABLE_HEARTBEAT_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tableId: activeTable.id, clientId }),
+    });
+    if (response.status === 404) {
+      handleRemoteTableMissing();
+      return;
+    }
+    if (response.ok) setSyncStatus("connected");
+  } catch {
+    setSyncStatus("offline");
+  }
+}
+
+function sendTableLeaveBeacon(tableId = activeTable?.id) {
+  if (!tableId) return;
+  const payload = JSON.stringify({ tableId, clientId });
+  if (navigator.sendBeacon) {
+    navigator.sendBeacon(TABLE_LEAVE_URL, new Blob([payload], { type: "application/json" }));
+    return;
+  }
+  fetch(TABLE_LEAVE_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: payload,
+    keepalive: true,
+  }).catch(() => {});
+}
+
+function handleRemoteTableMissing() {
+  if (!activeTable) return;
+  const missingId = activeTable.id;
+  stopOnlineSync();
+  activeTable = null;
+  setSyncStatus("offline");
+  showLobby(`牌桌 ${missingId} 已不存在或已被清理。`);
+  refreshLobbyTables();
+}
+
+function showLobby(message = "") {
+  stopOnlineSync();
+  if (battlefieldResizeObserver) battlefieldResizeObserver.disconnect();
+  closeOpenDialogs();
+  els.app.hidden = true;
+  els.lobby.hidden = false;
+  if (message) setLobbyMessage(message);
+}
+
+function showTable() {
+  els.lobby.hidden = true;
+  els.app.hidden = false;
+  setSyncStatus("connecting");
+  updateSeatToggle();
+  render({ captureLayout: false });
+}
+
+function setLobbyMessage(message, tone = "") {
+  if (!els.lobbyMessage) return;
+  els.lobbyMessage.textContent = message || "";
+  els.lobbyMessage.dataset.tone = tone;
+}
+
+function closeOpenDialogs() {
+  [els.zoneDialog, els.cardDialog, els.libraryMoveDialog].forEach((dialog) => {
+    if (dialog?.open) dialog.close();
+  });
+}
+
+async function refreshLobbyTables(query = els.tableSearchInput?.value || "") {
+  if (!els.tableList) return;
+  setLobbyMessage("正在刷新牌桌...");
+  try {
+    const params = new URLSearchParams();
+    if (query.trim()) params.set("query", query.trim());
+    const url = params.toString() ? `${TABLES_URL}?${params}` : TABLES_URL;
+    const response = await fetch(url, { cache: "no-store" });
+    if (!response.ok) throw new Error("request failed");
+    const data = await response.json();
+    renderLobbyTables(data.tables || []);
+    setLobbyMessage((data.tables || []).length ? "" : "没有找到正在进行的牌桌。");
+  } catch {
+    renderLobbyTables([]);
+    setLobbyMessage("无法连接大厅服务，请确认 server.py 正在运行。", "error");
+  }
+}
+
+function renderLobbyTables(tables) {
+  if (!els.tableList) return;
+  if (!tables.length) {
+    els.tableList.innerHTML = "";
+    return;
+  }
+  els.tableList.innerHTML = tables.map(renderLobbyTableCard).join("");
+  els.tableList.querySelectorAll("[data-join-table]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const tableId = button.dataset.joinTable;
+      const password = button.closest(".table-card")?.querySelector("[data-table-password]")?.value || "";
+      joinTable(tableId, password);
+    });
+  });
+}
+
+function renderLobbyTableCard(table) {
+  const lastBadge = isLastPlayedTable(table.id) ? '<span class="last-table-badge">上次游玩</span>' : "";
+  const names = Array.isArray(table.playerNames) ? table.playerNames.filter(Boolean).join(" vs ") : "P1 vs P2";
+  const passwordHint = table.hasPassword ? "需要密码" : "无密码";
+  const activeText = Number.isFinite(table.activeClients) ? `${table.activeClients} 个连接` : "";
+  return `
+    <article class="table-card">
+      <div class="table-card-main">
+        <div>
+          <h3>${escapeHtml(table.id)} ${lastBadge}</h3>
+          <p>${escapeHtml(names)} · ${escapeHtml(passwordHint)}${activeText ? ` · ${escapeHtml(activeText)}` : ""}</p>
+        </div>
+        <time>${escapeHtml(formatLobbyTime(table.updatedAt || table.createdAt))}</time>
+      </div>
+      <div class="table-join-row">
+        <input data-table-password="${escapeHtml(table.id)}" type="password" placeholder="${table.hasPassword ? "输入密码" : "密码可空"}" autocomplete="current-password" />
+        <button type="button" data-join-table="${escapeHtml(table.id)}">进入</button>
+      </div>
+    </article>`;
+}
+
+function formatLobbyTime(timestamp) {
+  const value = Number(timestamp);
+  if (!Number.isFinite(value)) return "";
+  return new Date(value).toLocaleTimeString("zh-CN", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+}
+
+async function createTable(event) {
+  event.preventDefault();
+  const requestedId = els.createTableId.value.trim();
+  const password = els.createTablePassword.value;
+  setLobbyMessage("正在创建牌桌...");
+  try {
+    const response = await fetch(TABLES_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tableId: requestedId, password }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (response.status === 409) {
+      setLobbyMessage("这个牌桌号已经存在，请换一个。", "error");
+      return;
+    }
+    if (response.status === 400) {
+      setLobbyMessage("牌桌号只能使用 3-24 位英文字母、数字、下划线或短横线；也可以留空自动生成。", "error");
+      return;
+    }
+    if (!response.ok) {
+      setLobbyMessage(data.error || "创建牌桌失败。", "error");
+      return;
+    }
+    els.createTableId.value = "";
+    els.createTablePassword.value = "";
+    await joinTable(data.table.id, password);
+  } catch {
+    setLobbyMessage("无法连接大厅服务，请确认 server.py 正在运行。", "error");
+  }
+}
+
+async function joinTable(tableId, password = "") {
+  const id = String(tableId || "").trim();
+  if (!id) return;
+  setLobbyMessage(`正在进入牌桌 ${id}...`);
+  try {
+    const response = await fetch(TABLE_JOIN_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tableId: id, password, clientId }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (response.status === 403) {
+      setLobbyMessage("密码不正确。", "error");
+      return;
+    }
+    if (response.status === 404) {
+      setLobbyMessage("牌桌不存在，可能已经被清理。", "error");
+      refreshLobbyTables();
+      return;
+    }
+    if (!response.ok) {
+      setLobbyMessage(data.error || "进入牌桌失败。", "error");
+      return;
+    }
+
+    activeTable = data.table;
+    state = data.state ? migrateState(data.state) : makeInitialState();
+    markLastTable(id);
+    persistLocalState();
+    showTable();
+    await startOnlineSync();
+    if (!data.state) publishTableState();
+  } catch {
+    setLobbyMessage("无法连接大厅服务，请确认 server.py 正在运行。", "error");
+  }
+}
+
+function leaveCurrentTable() {
+  if (activeTable) sendTableLeaveBeacon(activeTable.id);
+  stopOnlineSync();
+  activeTable = null;
+  setSyncStatus("offline");
+  showLobby("已离开牌桌。");
+  refreshLobbyTables();
 }
 
 function shuffle(cards) {
@@ -922,9 +1216,14 @@ function normalizeSeat(value) {
   return SEAT_ORDER.includes(value) ? value : "p1";
 }
 
+function seatDisplayName(playerId) {
+  if (playerId === "spectator") return SEAT_LABELS.spectator;
+  return state.players?.[playerId]?.name || SEAT_LABELS[playerId] || SEAT_LABELS.p1;
+}
+
 function updateSeatToggle() {
   if (els.seatToggle) {
-    els.seatToggle.textContent = `视角：${SEAT_LABELS[seat] || SEAT_LABELS.p1}`;
+    els.seatToggle.textContent = `视角：${seatDisplayName(seat)}`;
   }
 }
 
@@ -933,21 +1232,20 @@ function visibleSeat() {
 }
 
 function render(options = {}) {
+  if (!activeTable) return;
   if (options.captureLayout !== false) {
     captureBattlefieldHeights();
   }
   const selfId = visibleSeat();
   const opponentId = opponentOf(selfId);
-  renderPlayerPanel(els.opponentArea, opponentId);
   renderSharedBattlefield(els.battlefieldArea, selfId, opponentId);
-  renderPlayerPanel(els.selfArea, selfId);
+  renderPlayerPanel(els.opponentArea, opponentId, "opponent");
+  renderPlayerPanel(els.selfArea, selfId, "self");
   renderLog();
   renderTimer();
   renderSyncStatus();
-  renderUndoButton();
   observeBattlefieldResize();
   syncHandFanLayout();
-  updateRelationSelectionUi();
   hydrateMissingCatalogImages();
 }
 
@@ -973,8 +1271,9 @@ function renderSyncStatus() {
   if (!els.syncStatus) return;
   const label = SYNC_LABELS[syncState.status] || SYNC_LABELS.connecting;
   const time = syncState.lastOkAt ? ` · ${formatClock(syncState.lastOkAt)}` : "";
+  const tableLabel = activeTable ? `牌桌 ${activeTable.id} · ` : "";
   els.syncStatus.dataset.status = syncState.status;
-  els.syncStatus.textContent = `${label}${time}`;
+  els.syncStatus.textContent = `${tableLabel}${label}${time}`;
 }
 
 function formatClock(timestamp) {
@@ -986,32 +1285,45 @@ function formatClock(timestamp) {
   });
 }
 
-function renderUndoButton() {
-  if (!els.undoAction) return;
-  els.undoAction.disabled = !normalizeUndoStack(state.undoStack).length;
+function renderPlayerNameControl(playerId, player, canControl) {
+  if (!canControl) {
+    return `
+      <span class="panel-name-field">
+        <span class="panel-name-label" title="${escapeHtml(player.name)}">${escapeHtml(player.name)}</span>
+      </span>`;
+  }
+  return `
+    <span class="panel-name-field">
+      <input
+        class="panel-name-input"
+        data-player-name-input="${playerId}"
+        type="text"
+        maxlength="24"
+        value="${escapeHtml(player.name)}"
+        aria-label="编辑玩家名"
+        title="编辑玩家名"
+      />
+      <span class="panel-name-you">你</span>
+    </span>`;
 }
 
-function renderPlayerPanel(root, playerId) {
+function renderPlayerPanel(root, playerId, panelRole) {
   const player = state.players[playerId];
   const canControl = seat === playerId;
   const openAttr = playerPanelOpen[playerId] ? " open" : "";
   root.dataset.panelPlayer = playerId;
-  applyPlayerPanelPosition(root, playerId);
+  root.dataset.panelRole = panelRole;
   root.innerHTML = `
     <details class="player-panel-card" data-panel-player="${playerId}"${openAttr}>
       <summary>
-        <span>${escapeHtml(player.name)}${canControl ? "（你）" : ""}</span>
-        <strong>${player.life}</strong>
+        ${renderPlayerNameControl(playerId, player, canControl)}
+        <span class="summary-life">
+          ${canControl ? '<button data-action="life" data-delta="-1" aria-label="生命减一">-</button>' : ""}
+          <strong>${player.life}</strong>
+          ${canControl ? '<button data-action="life" data-delta="1" aria-label="生命加一">+</button>' : ""}
+        </span>
       </summary>
       <aside class="player-panel">
-        <div class="player-title">
-          <h2>${escapeHtml(player.name)}${canControl ? "（你）" : ""}</h2>
-          <div class="life-box">
-            ${canControl ? '<button data-action="life" data-delta="-1">-</button>' : ""}
-            <strong>${player.life}</strong>
-            ${canControl ? '<button data-action="life" data-delta="1">+</button>' : ""}
-          </div>
-        </div>
         <div class="mana-row">
           ${Object.keys(player.mana)
             .map(
@@ -1027,24 +1339,51 @@ function renderPlayerPanel(root, playerId) {
           canControl
             ? `<div class="deck-import">
                 <button data-action="untap-all">全部重置</button>
-                <div class="token-maker">
-                  <input name="token-name" type="text" placeholder="衍生物名称" value="Treasure Token" />
-                  <button data-action="create-token">创建衍生物</button>
-                </div>
               </div>`
             : ""
         }
       </aside>
     </details>
   `;
+  applyPlayerPanelPosition(root, playerId, panelRole);
   root.querySelector(".player-panel-card")?.addEventListener("toggle", (event) => {
     playerPanelOpen[playerId] = event.currentTarget.open;
   });
   bindPlayerPanelDrag(root, playerId);
+  bindPlayerNameInput(root, playerId);
   bindPlayerControls(root, playerId);
 }
 
-function applyPlayerPanelPosition(root, playerId) {
+function bindPlayerNameInput(root, playerId) {
+  const input = root.querySelector(`input[data-player-name-input="${playerId}"]`);
+  if (!input || input.readOnly || seat !== playerId) return;
+  const commit = () => {
+    const player = state.players[playerId];
+    const previous = player.name;
+    const next = sanitizePlayerName(input.value, playerId);
+    input.value = next;
+    if (next === previous) return;
+    player.name = next;
+    saveState(`${previous} 改名为 ${next}`);
+    updateSeatToggle();
+  };
+  input.addEventListener("change", commit);
+  input.addEventListener("blur", commit);
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      commit();
+      input.blur();
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      input.value = state.players[playerId].name;
+      input.blur();
+    }
+  });
+}
+
+function applyPlayerPanelPosition(root, playerId, panelRole) {
   const position = playerPanelPositions[playerId];
   if (position && Number.isFinite(position.x) && Number.isFinite(position.y)) {
     root.style.left = `${position.x}px`;
@@ -1052,14 +1391,52 @@ function applyPlayerPanelPosition(root, playerId) {
     root.style.right = "auto";
     return;
   }
-  root.style.left = "";
-  root.style.top = "";
-  root.style.right = "";
+  applyDefaultPlayerPanelPosition(root, panelRole);
+}
+
+function applyDefaultPlayerPanelPosition(root, panelRole) {
+  const table = root.closest(".table");
+  const canvas = table?.querySelector(".shared-battlefield");
+  if (!table || !canvas) {
+    root.style.left = "";
+    root.style.top = "";
+    root.style.right = `${PLAYER_PANEL_DEFAULT_GAP}px`;
+    return;
+  }
+  const tableRect = table.getBoundingClientRect();
+  const canvasRect = canvas.getBoundingClientRect();
+  const rootWidth = root.offsetWidth || 240;
+  const summaryHeight = root.querySelector("summary")?.offsetHeight || 42;
+  const halfHeight = canvasRect.height / 2;
+  const halfTop = canvasRect.top - tableRect.top + (panelRole === "self" ? halfHeight : 0);
+  const canvasLeft = canvasRect.left - tableRect.left;
+  const canvasRight = canvasRect.right - tableRect.left;
+  const maxX = Math.max(0, table.clientWidth - rootWidth);
+  const minX = Math.max(0, canvasLeft + PLAYER_PANEL_DEFAULT_GAP);
+  const x = Math.min(maxX, Math.max(minX, canvasRight - rootWidth - PLAYER_PANEL_DEFAULT_GAP));
+  const minY = Math.max(0, halfTop + PLAYER_PANEL_DEFAULT_GAP);
+  const maxTitleY = halfTop + halfHeight - summaryHeight - PLAYER_PANEL_DEFAULT_GAP;
+  const y = maxTitleY >= minY ? minY : Math.max(0, maxTitleY);
+  root.style.left = `${Math.round(x)}px`;
+  root.style.top = `${Math.round(y)}px`;
+  root.style.right = "auto";
+}
+
+function updateDefaultPlayerPanelPositions() {
+  document.querySelectorAll(".player-area").forEach((root) => {
+    const playerId = root.dataset.panelPlayer;
+    if (!playerId || playerPanelPositions[playerId]) return;
+    applyDefaultPlayerPanelPosition(root, root.dataset.panelRole);
+  });
 }
 
 function bindPlayerPanelDrag(root, playerId) {
   const summary = root.querySelector(".player-panel-card summary");
   if (!summary) return;
+  summary.querySelectorAll("button, input, select, textarea").forEach((control) => {
+    control.addEventListener("pointerdown", (event) => event.stopPropagation());
+    control.addEventListener("click", (event) => event.stopPropagation());
+  });
   let start = null;
   let suppressClick = false;
 
@@ -1140,7 +1517,6 @@ function renderSharedBattlefield(root, selfId, opponentId) {
 
 function bindPlayerControls(root, playerId) {
   bindMarkerToolbar(root);
-  bindHandHoverSpread(root);
   root.querySelectorAll("button[data-action]").forEach((button) => {
     const action = button.dataset.action;
     if (button.dataset.player && button.dataset.player !== playerId && action !== "open-zone") return;
@@ -1153,15 +1529,7 @@ function bindPlayerControls(root, playerId) {
     }
   });
   root.querySelectorAll(".card[data-card-id]").forEach((cardEl) => {
-    cardEl.addEventListener("click", (event) => handleRelationCardClick(event, cardEl));
-    cardEl.addEventListener("dblclick", (event) => {
-      if (relationSelection) {
-        event.preventDefault();
-        event.stopPropagation();
-        return;
-      }
-      openCard(cardEl.dataset.cardId);
-    });
+    cardEl.addEventListener("dblclick", () => openCard(cardEl.dataset.cardId));
     if (cardEl.dataset.player === seat && cardEl.dataset.zone !== "detail") {
       cardEl.addEventListener("contextmenu", (event) => handleCardContextMenu(event, cardEl));
     }
@@ -1201,30 +1569,36 @@ function bindPlayerControls(root, playerId) {
   });
 }
 
-function bindHandHoverSpread(root) {
-  root.querySelectorAll(".self-hand.hand-strip").forEach((strip) => {
-    strip.addEventListener("pointerover", (event) => {
-      const cardEl = event.target.closest?.(".card[data-zone='hand']");
-      if (!cardEl || !strip.contains(cardEl)) return;
-      spreadCardsBeforeHovered(strip, cardEl);
-    });
-    strip.addEventListener("pointerleave", () => clearHandHoverSpread(strip));
-    strip.addEventListener("dragstart", () => clearHandHoverSpread(strip));
-  });
+function handLayoutVarsToStyle(layout) {
+  return [
+    ["--hand-overlap", layout.overlap],
+    ["--hand-hover-gap", layout.hoverGap],
+    ["--hand-hover-scale", layout.hoverScale],
+    ["--hand-hover-shift", layout.hoverShift],
+  ]
+    .filter(([, value]) => value)
+    .map(([name, value]) => `${name}:${value}`)
+    .join(";");
 }
 
-function spreadCardsBeforeHovered(strip, hoveredCard) {
-  const cards = [...strip.querySelectorAll(".card[data-zone='hand']")];
-  const hoveredIndex = cards.indexOf(hoveredCard);
-  cards.forEach((cardEl, index) => {
-    cardEl.classList.toggle("hand-hover-before", hoveredIndex > 0 && index < hoveredIndex);
-  });
+function handLayoutStyle(playerId) {
+  const layout = handLayoutVars.get(playerId);
+  if (!layout) return "";
+  return ` style="${handLayoutVarsToStyle(layout)}"`;
 }
 
-function clearHandHoverSpread(strip) {
-  strip.querySelectorAll(".hand-hover-before").forEach((cardEl) => {
-    cardEl.classList.remove("hand-hover-before");
+function applyHandLayout(strip, playerId, layout) {
+  handLayoutVars.set(playerId, layout);
+  strip.classList.add("layout-syncing");
+  Object.entries({
+    "--hand-overlap": layout.overlap,
+    "--hand-hover-gap": layout.hoverGap,
+    "--hand-hover-scale": layout.hoverScale,
+    "--hand-hover-shift": layout.hoverShift,
+  }).forEach(([name, value]) => {
+    if (value) strip.style.setProperty(name, value);
   });
+  window.requestAnimationFrame(() => strip.classList.remove("layout-syncing"));
 }
 
 function handleDelegatedCardDragStart(event) {
@@ -1264,7 +1638,10 @@ function renderMarkerToolbar(selfId, opponentId) {
       <input name="marker-text" type="text" maxlength="40" placeholder="标记文本" />
       <input name="marker-color" type="color" value="${escapeHtml(markerToolbarState.color)}" aria-label="标记颜色" />
       <button data-action="add-marker">添加标记</button>
-      <button class="${relationSelection ? "relation-active" : ""}" data-action="start-relation">${relationSelection ? "取消指向" : "记录指向"}</button>
+      <div class="token-maker" aria-label="创建衍生物">
+        <input name="token-name" type="text" placeholder="衍生物名称" />
+        <button data-action="create-token">创建衍生物</button>
+      </div>
     </div>`;
 }
 
@@ -1355,21 +1732,6 @@ function handCardStyle(index, total) {
   return `--hand-z: ${total - index};`;
 }
 
-function handLayoutStyle(playerId) {
-  const layout = handLayoutVars.get(playerId);
-  if (!layout) return "";
-  return ` style="--hand-overlap:${layout.overlap};--hand-hover-gap:${layout.hoverGap};--hand-first-hover-gap:${layout.firstHoverGap};"`;
-}
-
-function applyHandLayout(strip, playerId, layout) {
-  handLayoutVars.set(playerId, layout);
-  strip.classList.add("layout-syncing");
-  strip.style.setProperty("--hand-overlap", layout.overlap);
-  strip.style.setProperty("--hand-hover-gap", layout.hoverGap);
-  strip.style.setProperty("--hand-first-hover-gap", layout.firstHoverGap);
-  window.requestAnimationFrame(() => strip.classList.remove("layout-syncing"));
-}
-
 function syncHandFanLayout() {
   document.querySelectorAll(".hand-strip").forEach((strip) => {
     const cards = [...strip.querySelectorAll(".card")];
@@ -1378,7 +1740,8 @@ function syncHandFanLayout() {
     const fallbackLayout = {
       overlap: "calc(var(--card-w) * -0.22)",
       hoverGap: "clamp(20px, 3vw, 44px)",
-      firstHoverGap: "clamp(60px, 6vw, 96px)",
+      hoverScale: "1.5",
+      hoverShift: "18px",
     };
     if (count <= 1) return;
 
@@ -1406,17 +1769,15 @@ function syncHandFanLayout() {
       layoutAvailable - cardWidth * count - gap * Math.max(0, count - 2),
     );
     const hoverGap = clampNumber(hoverMax, 8, count > 14 ? 24 : 42);
-    const firstHoverGap = clampNumber(
-      Math.min(cardWidth * 0.9, hoverMax),
-      Math.max(hoverGap, 18),
-      count > 14 ? 64 : 104,
-    );
-
+    const battleCardWidth = BATTLE_GRID_SIZE * BATTLE_CARD_GRID_W;
+    const hoverScale = clampNumber((battleCardWidth / cardWidth) * 100, 110, 240) / 100;
+    const hoverShift = clampNumber(((hoverScale - 1) * cardWidth) / 2, 10, 34);
     if (!playerId) return;
     applyHandLayout(strip, playerId, {
       overlap: `${gap.toFixed(2)}px`,
       hoverGap: `${hoverGap.toFixed(2)}px`,
-      firstHoverGap: `${firstHoverGap.toFixed(2)}px`,
+      hoverScale: hoverScale.toFixed(2),
+      hoverShift: `${hoverShift.toFixed(2)}px`,
     });
   });
 }
@@ -1440,7 +1801,7 @@ function createHandCardDragImage(cardEl) {
   wrapper.innerHTML = cardEl.outerHTML;
   const clone = wrapper.querySelector(".card");
   if (clone) {
-    clone.classList.remove("dragging", "relation-selectable", "relation-source", "relation-target");
+    clone.classList.remove("dragging");
     clone.removeAttribute("style");
   }
   document.body.append(wrapper);
@@ -1585,6 +1946,7 @@ function observeBattlefieldResize() {
           }
         });
       });
+      updateDefaultPlayerPanelPositions();
       if (changed) persistLocalState();
     });
   }
@@ -1619,7 +1981,7 @@ function clampBattlefieldToHalfHeight(player, halfHeight) {
 
 function syncBattlefieldPositionStyles(playerId, player) {
   document.querySelectorAll(`.battlefield-piece[data-player="${playerId}"]`).forEach((pieceEl) => {
-    const cardId = pieceEl.querySelector(".card")?.dataset.cardId;
+    const cardId = pieceEl.dataset.cardId || pieceEl.querySelector(".card")?.dataset.cardId;
     const card = player.battlefield.cards.find((item) => item.id === cardId);
     if (!card) return;
     pieceEl.style.setProperty("--grid-y", card.gridY);
@@ -1633,16 +1995,31 @@ function syncBattlefieldPositionStyles(playerId, player) {
 
 function renderCard(playerId, instance, zone, canControl, options = {}) {
   const card = getCardInfo(instance);
-  const draggable = canControl && zone !== "detail" ? ' draggable="true"' : "";
+  const draggable = canControl && zone !== "detail" && options.draggable !== false ? ' draggable="true"' : "";
   const styleAttr = options.style ? ` style="${options.style}"` : "";
+  const extraClass = options.className ? ` ${escapeHtml(options.className)}` : "";
   const cardKeyAttr = instance.cardKey ? ` data-card-key="${escapeHtml(instance.cardKey)}"` : "";
   return `
-    <article class="card ${instance.tapped ? "tapped" : ""} ${instance.isToken ? "token-card" : ""} ${instance.faceDown ? "face-down-card" : ""} ${instance.flipAnimation ? "flip-reveal" : ""}" data-card-id="${instance.id}" data-player="${playerId}" data-zone="${zone}"${cardKeyAttr}${styleAttr}${draggable}>
+    <article class="card ${instance.tapped ? "tapped" : ""} ${instance.isToken ? "token-card" : ""} ${instance.faceDown ? "face-down-card" : ""} ${instance.flipAnimation ? "flip-reveal" : ""}${extraClass}" data-card-id="${instance.id}" data-player="${playerId}" data-zone="${zone}"${cardKeyAttr}${styleAttr}${draggable}>
       ${renderCardFace(card, instance)}
     </article>`;
 }
 
 function renderCardFace(card, instance = {}) {
+  if (instance.flipAnimation && instance.flipFrom) {
+    const fromInstance = instance.flipFrom || {};
+    const fromCard = fromInstance.cardKey
+      ? state.catalog[fromInstance.cardKey] || { name: fromInstance.cardKey, typeLine: "", image: "" }
+      : card;
+    return renderFlipFaceStack(
+      renderCardFaceContent(fromCard, fromInstance),
+      renderCardFaceContent(card, instance),
+    );
+  }
+  return renderCardFaceContent(card, instance);
+}
+
+function renderCardFaceContent(card, instance = {}) {
   if (instance.faceDown) {
     return '<div class="card-back">Magic<br />Card</div>';
   }
@@ -1650,6 +2027,14 @@ function renderCardFace(card, instance = {}) {
     return `<img src="${escapeHtml(imageSrc(card.image))}" alt="${escapeHtml(card.name)}" loading="lazy" draggable="false" />`;
   }
   return `<div class="fallback-face"><strong>${escapeHtml(card.name)}</strong><small>${escapeHtml(card.typeLine || "")}</small><p>${instance.isToken ? "衍生物" : "卡面图片未加载"}</p></div>`;
+}
+
+function renderFlipFaceStack(fromFace, toFace) {
+  return `
+    <div class="flip-face-stack">
+      <div class="flip-face flip-face-front">${fromFace}</div>
+      <div class="flip-face flip-face-back">${toFace}</div>
+    </div>`;
 }
 
 function handleAction(button, playerId, root, options = {}) {
@@ -1687,9 +2072,6 @@ function handleAction(button, playerId, root, options = {}) {
   }
   if (action === "add-marker") {
     createBattlefieldMarker(root);
-  }
-  if (action === "start-relation") {
-    toggleRelationSelection();
   }
 }
 
@@ -1732,11 +2114,22 @@ function createToken(playerId, root) {
   const form = root.querySelector(".token-maker");
   if (!form) return;
 
-  const name = form.querySelector("[name='token-name']").value.trim() || "Token";
+  const input = form.querySelector("[name='token-name']");
+  const name = input.value.trim();
+  if (!name) {
+    input.focus();
+    return;
+  }
   const typeLine = "Token";
   const cardKey = tokenCatalogKey(name, typeLine);
 
-  state.catalog[cardKey] = { name, typeLine, image: "", searchName: tokenSearchName(name) };
+  state.catalog[cardKey] = {
+    ...state.catalog[cardKey],
+    name,
+    typeLine,
+    searchName: tokenSearchName(name),
+  };
+  rememberExtraDeckEntry(player, cardKey);
   const position = nextBattlefieldPosition(player, "other");
   player.battlefield.cards.push({
     id: crypto.randomUUID(),
@@ -1748,6 +2141,10 @@ function createToken(playerId, root) {
   });
   saveState(`${player.name} 创建 ${name} 衍生物`);
   refreshCatalogEntries([cardKey]);
+}
+
+function rememberExtraDeckEntry(player, cardKey) {
+  player.extraDeck = normalizeExtraDeckList([...(player.extraDeck || []), { name: cardKey }]);
 }
 
 function tokenCatalogKey(name, typeLine) {
@@ -1779,126 +2176,6 @@ function createBattlefieldMarker(root) {
   saveState(`${player.name} 添加标记`);
 }
 
-function toggleRelationSelection() {
-  if (!["p1", "p2"].includes(seat)) return;
-  if (relationSelection) {
-    cancelRelationSelection();
-    return;
-  }
-  relationSelection = { source: null, target: null };
-  render({ captureLayout: false });
-}
-
-function handleRelationCardClick(event, cardEl) {
-  if (!relationSelection) return;
-  const card = relationCardFromElement(cardEl);
-  if (!card) return;
-  event.preventDefault();
-  event.stopPropagation();
-
-  if (!relationSelection.source) {
-    relationSelection.source = card;
-    updateRelationSelectionUi();
-    return;
-  }
-
-  if (relationSelection.source.cardId === card.cardId) return;
-  relationSelection.target = card;
-  showRelationActionPopover(event.clientX, event.clientY);
-  updateRelationSelectionUi();
-}
-
-function relationCardFromElement(cardEl) {
-  const cardId = cardEl.dataset.cardId;
-  const instance = findInstance(cardId);
-  if (!instance) return null;
-  return {
-    playerId: cardEl.dataset.player,
-    cardId,
-    name: getCardInfo(instance).name,
-  };
-}
-
-function updateRelationSelectionUi() {
-  const active = Boolean(relationSelection);
-  document.body.classList.toggle("relation-mode", active);
-  document.querySelectorAll("[data-action='start-relation']").forEach((button) => {
-    button.classList.toggle("relation-active", active);
-    button.textContent = active ? "取消指向" : "记录指向";
-  });
-  document.querySelectorAll(".card[data-card-id]").forEach((cardEl) => {
-    const isSource =
-      active &&
-      relationSelection.source &&
-      cardEl.dataset.cardId === relationSelection.source.cardId &&
-      cardEl.dataset.player === relationSelection.source.playerId;
-    const isTarget =
-      active &&
-      relationSelection.target &&
-      cardEl.dataset.cardId === relationSelection.target.cardId &&
-      cardEl.dataset.player === relationSelection.target.playerId;
-    cardEl.classList.toggle("relation-selectable", active);
-    cardEl.classList.toggle("relation-source", Boolean(isSource));
-    cardEl.classList.toggle("relation-target", Boolean(isTarget));
-  });
-}
-
-function showRelationActionPopover(clientX, clientY) {
-  if (!relationSelection?.source || !relationSelection?.target || !els.relationActionPopover) return;
-  const host = els.zoneDialog.open ? els.zoneDialog : document.body;
-  if (els.relationActionPopover.parentElement !== host) {
-    host.append(els.relationActionPopover);
-  }
-  els.relationActionMeta.textContent = `${relationSelection.source.name} -> ${relationSelection.target.name}`;
-  els.relationActionSelect.value = "指定目标";
-  els.relationActionCustom.value = "";
-  updateRelationCustomInput();
-  els.relationActionPopover.hidden = false;
-  positionRelationActionPopover(clientX, clientY);
-  els.relationActionSelect.focus();
-}
-
-function positionRelationActionPopover(clientX, clientY) {
-  const popover = els.relationActionPopover;
-  const margin = 12;
-  const x = clientX + margin;
-  const y = clientY + margin;
-  const maxX = Math.max(margin, window.innerWidth - popover.offsetWidth - margin);
-  const maxY = Math.max(margin, window.innerHeight - popover.offsetHeight - margin);
-  popover.style.left = `${clampNumber(x, margin, maxX)}px`;
-  popover.style.top = `${clampNumber(y, margin, maxY)}px`;
-}
-
-function updateRelationCustomInput() {
-  const isCustom = els.relationActionSelect?.value === "custom";
-  if (!els.relationActionCustom) return;
-  els.relationActionCustom.hidden = !isCustom;
-  if (isCustom) els.relationActionCustom.focus();
-}
-
-function confirmRelationAction() {
-  if (!relationSelection?.source || !relationSelection?.target) return;
-  const selected = els.relationActionSelect.value;
-  const custom = els.relationActionCustom.value.trim();
-  const action = selected === "custom" ? custom : selected;
-  if (!action) return;
-  const { source, target } = relationSelection;
-  relationSelection = null;
-  hideRelationActionPopover();
-  saveState(`${source.name} 对 ${target.name}：${action}`);
-}
-
-function cancelRelationSelection() {
-  relationSelection = null;
-  hideRelationActionPopover();
-  updateRelationSelectionUi();
-}
-
-function hideRelationActionPopover() {
-  if (!els.relationActionPopover) return;
-  els.relationActionPopover.hidden = true;
-}
-
 function nextMarkerPosition(player) {
   const count = player.battlefield.annotations.length;
   return {
@@ -1914,10 +2191,10 @@ function clampNumber(value, min, max) {
 
 function handleDragStart(event, cardEl) {
   cardEl.classList.add("dragging");
+  const isHandCard = cardEl.dataset.zone === "hand";
   const rect = cardEl.getBoundingClientRect();
   const sourceWidth = cardEl.offsetWidth || rect.width || 1;
   const sourceHeight = cardEl.offsetHeight || rect.height || 1;
-  const isHandCard = cardEl.dataset.zone === "hand";
   const offsetX = isHandCard
     ? clampNumber(((event.clientX - rect.left) / Math.max(rect.width, 1)) * sourceWidth, 0, sourceWidth)
     : event.clientX - rect.left;
@@ -2060,13 +2337,15 @@ async function handleZoneDrop(event, dropEl) {
     const to = dropEl.dataset.dropZone;
     if (!to || to === payload.from) return;
     if (payload.type === "zone-select") {
-      await handleZoneSelectionZoneDrop(payload, to);
+      await handleZoneSelectionZoneDrop(event, payload, to);
       return;
     }
     const player = state.players[payload.playerId];
     const card = findCardInZone(player, payload.cardId, payload.from);
     if (!card) return;
-    const destination = to === "library" ? await chooseLibraryDestination(payload.playerId, card) : to;
+    const destination = to === "library"
+      ? await chooseLibraryDestination(payload.playerId, card, pointerAnchor(event))
+      : to;
     if (!destination) return;
     moveCard(payload.playerId, payload.cardId, payload.from, destination);
   } finally {
@@ -2105,7 +2384,7 @@ async function handleZoneSelectionBattlefieldDrop(event, payload, canvasEl) {
   scheduleFlipCleanup(livePlaceholder.id);
 }
 
-async function handleZoneSelectionZoneDrop(payload, to) {
+async function handleZoneSelectionZoneDrop(event, payload, to) {
   if (!["graveyard", "exile"].includes(payload.from)) return;
   if (!["hand", "library", "graveyard", "exile"].includes(to) || to === payload.from) return;
   const player = state.players[payload.playerId];
@@ -2138,7 +2417,7 @@ async function handleZoneSelectionZoneDrop(payload, to) {
   if (!candidate) return;
   if (to === "library") {
     if (candidate.isExtra) return;
-    const destination = await chooseLibraryDestination(payload.playerId, candidate);
+    const destination = await chooseLibraryDestination(payload.playerId, candidate, pointerAnchor(event));
     if (!destination) return;
     const selectedCard = takeZoneSelectionCard(player, payload.from, selection);
     if (!selectedCard) return;
@@ -2152,20 +2431,22 @@ async function handleZoneSelectionZoneDrop(payload, to) {
   saveState(`${player.name} 将 ${getCardInfo(selectedCard).name} 从${zoneLabel(payload.from)}移到${zoneLabel(to)}`);
 }
 
-function chooseLibraryDestination(playerId, card) {
+function chooseLibraryDestination(playerId, card, anchor = null) {
   if (!els.libraryMoveDialog) return Promise.resolve("library-top");
   const player = state.players[playerId];
   const cardName = getCardInfo(card).name;
+  const dialog = els.libraryMoveDialog;
   els.libraryMoveTitle.textContent = "移到牌库";
   els.libraryMoveMeta.textContent = `${player.name} - ${cardName}`;
+  prepareLibraryMoveDialogPosition(dialog, anchor);
 
   return new Promise((resolve) => {
     let settled = false;
-    const dialog = els.libraryMoveDialog;
     const cleanup = () => {
       dialog.removeEventListener("click", handleClick);
       dialog.removeEventListener("cancel", handleCancel);
       dialog.removeEventListener("close", handleClose);
+      resetLibraryMoveDialogPosition(dialog);
     };
     const finish = (destination) => {
       if (settled) return;
@@ -2191,12 +2472,61 @@ function chooseLibraryDestination(playerId, card) {
     dialog.addEventListener("cancel", handleCancel);
     dialog.addEventListener("close", handleClose);
     showDialog(dialog);
+    positionLibraryMoveDialog(dialog, anchor);
   });
+}
+
+function pointerAnchor(event) {
+  if (!Number.isFinite(event?.clientX) || !Number.isFinite(event?.clientY)) return null;
+  return { x: event.clientX, y: event.clientY };
+}
+
+function prepareLibraryMoveDialogPosition(dialog, anchor) {
+  if (!anchor) {
+    resetLibraryMoveDialogPosition(dialog);
+    return;
+  }
+  dialog.classList.add("pointer-dialog");
+  dialog.style.left = `${anchor.x + 12}px`;
+  dialog.style.top = `${anchor.y + 12}px`;
+}
+
+function positionLibraryMoveDialog(dialog, anchor) {
+  if (!anchor) return;
+  const margin = 12;
+  const offset = 12;
+  const rect = dialog.getBoundingClientRect();
+  const maxX = Math.max(margin, window.innerWidth - rect.width - margin);
+  const maxY = Math.max(margin, window.innerHeight - rect.height - margin);
+  const x = clampNumber(anchor.x + offset, margin, maxX);
+  const y = clampNumber(anchor.y + offset, margin, maxY);
+  dialog.style.left = `${x}px`;
+  dialog.style.top = `${y}px`;
+}
+
+function resetLibraryMoveDialogPosition(dialog) {
+  dialog.classList.remove("pointer-dialog");
+  dialog.style.left = "";
+  dialog.style.top = "";
 }
 
 function showDialog(dialog) {
   if (!dialog || dialog.open) return;
   dialog.showModal();
+}
+
+function closeDialogOnBackdropClick(dialog) {
+  if (!dialog) return;
+  dialog.addEventListener("click", (event) => {
+    if (event.target !== dialog) return;
+    const rect = dialog.getBoundingClientRect();
+    const outsideDialog =
+      event.clientX < rect.left ||
+      event.clientX > rect.right ||
+      event.clientY < rect.top ||
+      event.clientY > rect.bottom;
+    if (outsideDialog) dialog.close();
+  });
 }
 
 function battlefieldDropPosition(event, payload, canvasEl, card) {
@@ -2340,22 +2670,13 @@ function openZone(playerId, zone) {
     .map((card) => renderCard(playerId, card, zone, canControl))
     .join("");
   els.zoneCards.querySelectorAll(".card").forEach((cardEl) => {
-    cardEl.addEventListener("click", (event) => handleRelationCardClick(event, cardEl));
-    cardEl.addEventListener("dblclick", (event) => {
-      if (relationSelection) {
-        event.preventDefault();
-        event.stopPropagation();
-        return;
-      }
-      openCard(cardEl.dataset.cardId);
-    });
+    cardEl.addEventListener("dblclick", () => openCard(cardEl.dataset.cardId));
     if (cardEl.dataset.player === seat) {
       cardEl.addEventListener("contextmenu", (event) => handleCardContextMenu(event, cardEl));
       cardEl.addEventListener("dragstart", (event) => handleDragStart(event, cardEl));
       cardEl.addEventListener("dragend", () => clearDragState());
     }
   });
-  updateRelationSelectionUi();
   showDialog(els.zoneDialog);
 }
 
@@ -2404,34 +2725,36 @@ function openCardDetail({ englishCard, searchName, instance = null }) {
 
 function renderCardDetail() {
   if (!cardDetailState) return;
-  const usingChinese = cardDetailState.language === "zh" && cardDetailState.chineseCard;
-  const card = usingChinese ? cardDetailState.chineseCard : cardDetailState.englishCard;
-  const toggleLabel = usingChinese ? "英文" : "中文";
-  const status = cardDetailState.loadingChinese
-    ? "正在查询中文卡图..."
-    : cardDetailState.chineseFailed
-      ? "未找到中文卡图"
-      : "";
-  els.cardDetail.innerHTML = `
-    <div class="card-detail-toolbar">
-      <button type="button" data-card-language-toggle ${cardDetailState.loadingChinese ? "disabled" : ""}>${toggleLabel}</button>
-      ${status ? `<span>${escapeHtml(status)}</span>` : ""}
-    </div>
-    ${renderDetailCard(card, cardDetailState.instance)}`;
-  els.cardDetail.querySelector("[data-card-language-toggle]")?.addEventListener("click", toggleCardDetailLanguage);
+  const card = currentDetailCard();
+  els.cardDetail.innerHTML = renderDetailCard(card, cardDetailState.instance);
+  els.cardDetail.querySelector(".card")?.addEventListener("click", toggleCardDetailLanguage);
+}
+
+function currentDetailCard() {
+  if (!cardDetailState) return null;
+  return cardDetailState.language === "zh" && cardDetailState.chineseCard
+    ? cardDetailState.chineseCard
+    : cardDetailState.englishCard;
+}
+
+function startCardDetailFlipFromCurrent() {
+  if (!cardDetailState) return;
+  cardDetailState.flipFromCard = currentDetailCard();
+  cardDetailState.flipAnimation = true;
 }
 
 async function toggleCardDetailLanguage() {
   if (!cardDetailState) return;
+  if (cardDetailState.loadingChinese) return;
   if (cardDetailState.language === "zh" && cardDetailState.chineseCard) {
+    startCardDetailFlipFromCurrent();
     cardDetailState.language = "en";
-    cardDetailState.flipAnimation = true;
     renderCardDetail();
     return;
   }
   if (cardDetailState.chineseCard) {
+    startCardDetailFlipFromCurrent();
     cardDetailState.language = "zh";
-    cardDetailState.flipAnimation = true;
     renderCardDetail();
     return;
   }
@@ -2445,9 +2768,9 @@ async function toggleCardDetailLanguage() {
   if (!cardDetailState || cardDetailState.requestId !== requestId) return;
   cardDetailState.loadingChinese = false;
   if (chineseCard) {
+    startCardDetailFlipFromCurrent();
     cardDetailState.chineseCard = chineseCard;
     cardDetailState.language = "zh";
-    cardDetailState.flipAnimation = true;
     chineseDetailCache.set(normalizeDetailSearchName(searchName), chineseCard);
   } else {
     cardDetailState.chineseFailed = true;
@@ -2543,6 +2866,32 @@ function putCardInZone(player, card, zone) {
   }
 }
 
+function putCardsInZone(player, cards, zone) {
+  if (!cards.length) return;
+  if (zone === "library" || zone === "library-top") {
+    for (let index = cards.length - 1; index >= 0; index -= 1) {
+      player.library.unshift(cards[index]);
+    }
+    return;
+  }
+  if (zone === "library-bottom") {
+    player.library.push(...cards);
+    return;
+  }
+  if (zone === "library-random") {
+    cards.forEach((card) => {
+      const index = Math.floor(Math.random() * (player.library.length + 1));
+      player.library.splice(index, 0, card);
+    });
+    return;
+  }
+  if (zone === "hand") {
+    player.hand.push(...cards);
+    return;
+  }
+  player[zone].unshift(...cards);
+}
+
 function makeFaceDownPlaceholder() {
   return {
     id: crypto.randomUUID(),
@@ -2553,6 +2902,14 @@ function makeFaceDownPlaceholder() {
 }
 
 function makeExtraDeckCard(cardKey) {
+  if (cardKey.startsWith("token:")) {
+    return {
+      id: crypto.randomUUID(),
+      cardKey,
+      tapped: false,
+      isToken: true,
+    };
+  }
   return {
     id: crypto.randomUUID(),
     cardKey,
@@ -2566,12 +2923,18 @@ function revealPlaceholderCard(placeholder, selectedCard) {
     gridX: placeholder.gridX,
     gridY: placeholder.gridY,
   };
+  const flipFrom = {
+    cardKey: placeholder.cardKey || "",
+    faceDown: Boolean(placeholder.faceDown),
+    isToken: Boolean(placeholder.isToken),
+  };
   Object.keys(placeholder).forEach((key) => delete placeholder[key]);
   Object.assign(placeholder, {
     ...selectedCard,
     ...position,
     faceDown: false,
     flipAnimation: true,
+    flipFrom,
   });
 }
 
@@ -2580,7 +2943,8 @@ function scheduleFlipCleanup(cardId) {
     const instance = findInstance(cardId);
     if (!instance?.flipAnimation) return;
     delete instance.flipAnimation;
-    saveState(null, { captureLayout: false, undo: false });
+    delete instance.flipFrom;
+    saveState(null, { captureLayout: false });
   }, 700);
 }
 
@@ -3013,16 +3377,6 @@ function parseTranslationLookup(query) {
   return match ? match[1].trim() : "";
 }
 
-async function lookupCardByName(query) {
-  renderLookupMessage("正在查询卡片...");
-  const card = await fetchExactCard(query);
-  if (card) {
-    renderCardLookup(card);
-    return;
-  }
-  renderLookupMessage(`没有找到卡片“${query}”。`);
-}
-
 function lookupMechanicOnly(query) {
   const mechanic = findMechanic(query, { exact: false });
   if (mechanic) {
@@ -3193,15 +3547,16 @@ function renderDetailCard(card, instance = null) {
     window.setTimeout(() => {
       if (!cardDetailState) return;
       cardDetailState.flipAnimation = false;
+      cardDetailState.flipFromCard = null;
     }, 700);
   }
+  const face = renderCardFaceContent(card, instance || {});
+  const content = cardDetailState?.flipAnimation && cardDetailState.flipFromCard
+    ? renderFlipFaceStack(renderCardFaceContent(cardDetailState.flipFromCard, instance || {}), face)
+    : face;
   return `
     <article class="card${flipClass}">
-      ${
-        card.image
-          ? `<img src="${escapeHtml(imageSrc(card.image))}" alt="${escapeHtml(card.name)}" loading="lazy" draggable="false" />`
-          : `<div class="fallback-face"><strong>${escapeHtml(card.name)}</strong><small>${escapeHtml(card.typeLine || "")}</small><p>${instance?.isToken ? "衍生物" : "卡面图片未加载"}</p></div>`
-      }
+      ${content}
     </article>`;
 }
 
@@ -3323,7 +3678,7 @@ function escapeHtml(value) {
 function cycleSeat() {
   const currentIndex = SEAT_ORDER.indexOf(seat);
   seat = SEAT_ORDER[(currentIndex + 1) % SEAT_ORDER.length];
-  cancelRelationSelection();
+  resetPanelPositions();
   sessionStorage.setItem("mtg-online-seat", seat);
   localStorage.removeItem("mtg-online-seat");
   updateSeatToggle();
@@ -3345,37 +3700,21 @@ function toggleTimer() {
       startedAt: Date.now(),
     };
   }
-  saveState(null, { captureLayout: false, undo: false });
+  saveState(null, { captureLayout: false });
 }
 
 function resetTimer() {
   state.timer = makeTimerState();
-  saveState(null, { captureLayout: false, undo: false });
-}
-
-function undoLastAction() {
-  const undoStack = normalizeUndoStack(state.undoStack);
-  if (!undoStack.length) return;
-  const previous = undoStack[0];
-  const nextUpdatedAt = Math.max(Date.now(), (Number(state.updatedAt) || 0) + 1);
-  state = migrateState({
-    ...previous,
-    updatedAt: nextUpdatedAt,
-    undoStack: undoStack.slice(1),
-  });
-  state.log = ["撤销上一步", ...state.log].slice(0, 40);
-  persistState();
-  render();
+  saveState(null, { captureLayout: false });
 }
 
 function randomActorLabel() {
-  return SEAT_LABELS[seat] || "旁观";
+  return seatDisplayName(seat) || "旁观";
 }
 
 function recordRandomResult(label, result) {
   saveState(`${randomActorLabel()} 随机：${label} -> ${result}`, {
     captureLayout: false,
-    undo: false,
   });
 }
 
@@ -3387,10 +3726,18 @@ function rollDie(sides) {
   recordRandomResult(`D${sides}`, Math.floor(Math.random() * sides) + 1);
 }
 
+els.createTableForm.addEventListener("submit", createTable);
+els.searchTableForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  refreshLobbyTables(els.tableSearchInput.value);
+});
+els.refreshTables.addEventListener("click", () => {
+  els.tableSearchInput.value = "";
+  refreshLobbyTables();
+});
 els.seatToggle.addEventListener("click", cycleSeat);
 els.timerToggle.addEventListener("click", toggleTimer);
 els.timerReset.addEventListener("click", resetTimer);
-els.undoAction.addEventListener("click", undoLastAction);
 els.flipCoin.addEventListener("click", flipCoin);
 els.rollD6.addEventListener("click", () => rollDie(6));
 els.rollD20.addEventListener("click", () => rollDie(20));
@@ -3398,6 +3745,7 @@ els.resetGame.addEventListener("click", () => {
   state = makeInitialState();
   saveState("牌桌已重置", { captureLayout: false });
 });
+els.leaveTable.addEventListener("click", leaveCurrentTable);
 els.importDeckTop.addEventListener("click", () => {
   if (!["p1", "p2"].includes(seat)) {
     saveState("旁观身份不能导入牌表");
@@ -3412,29 +3760,23 @@ els.lookupInput.addEventListener("keydown", (event) => {
   handleLookup();
 });
 
-els.relationActionSelect.addEventListener("change", updateRelationCustomInput);
-els.relationActionConfirm.addEventListener("click", confirmRelationAction);
-els.relationActionCancel.addEventListener("click", cancelRelationSelection);
-els.relationActionCustom.addEventListener("keydown", (event) => {
-  if (event.key !== "Enter") return;
-  event.preventDefault();
-  confirmRelationAction();
-});
-
 els.closeZone.addEventListener("click", () => els.zoneDialog.close());
-els.zoneDialog.addEventListener("close", () => {
-  if (relationSelection && els.relationActionPopover.parentElement === els.zoneDialog) {
-    cancelRelationSelection();
-  }
-});
-els.closeCard.addEventListener("click", () => els.cardDialog.close());
+closeDialogOnBackdropClick(els.zoneDialog);
+closeDialogOnBackdropClick(els.cardDialog);
+closeDialogOnBackdropClick(els.libraryMoveDialog);
 
 channel?.addEventListener("message", (event) => {
-  applyIncomingState(event.data);
+  const message = event.data;
+  if (message?.tableId) {
+    if (activeTable?.id !== message.tableId) return;
+    applyIncomingState(message.state);
+    return;
+  }
+  if (activeTable) applyIncomingState(message);
 });
 
 window.addEventListener("storage", (event) => {
-  if (event.key !== STORAGE_KEY || !event.newValue) return;
+  if (!activeTable || event.key !== tableStorageKey() || !event.newValue) return;
   try {
     const incoming = JSON.parse(event.newValue);
     applyIncomingState(incoming);
@@ -3444,7 +3786,10 @@ window.addEventListener("storage", (event) => {
 });
 
 window.addEventListener("resize", syncHandFanLayout);
+window.addEventListener("pagehide", () => {
+  if (activeTable) sendTableLeaveBeacon(activeTable.id);
+});
 
-render();
 window.setInterval(renderTimer, 500);
-startOnlineSync();
+showLobby();
+refreshLobbyTables();
