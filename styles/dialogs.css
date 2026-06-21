@@ -1,0 +1,166 @@
+.log-panel {
+  min-height: 108px;
+  max-height: 220px;
+  overflow: auto;
+  padding: 10px;
+  line-height: 1.45;
+}
+
+.zone-dialog,
+.card-dialog,
+.library-move-dialog {
+  width: min(960px, calc(100vw - 24px));
+  max-height: min(840px, calc(100vh - 24px));
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #1b1f1d;
+  color: var(--text);
+}
+
+.zone-dialog::backdrop,
+.card-dialog::backdrop,
+.library-move-dialog::backdrop {
+  background: rgba(0, 0, 0, 0.68);
+}
+
+.library-move-dialog {
+  width: min(360px, calc(100vw - 24px));
+}
+
+.library-move-dialog.pointer-dialog {
+  position: fixed;
+  inset: auto;
+  margin: 0;
+}
+
+.library-move-options {
+  display: grid;
+  gap: 8px;
+  padding-top: 12px;
+}
+
+.library-move-options button {
+  min-height: 44px;
+}
+
+.library-move-cancel {
+  color: var(--muted);
+  background: #151816;
+}
+
+.dialog-head {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 14px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.zone-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(108px, 1fr));
+  gap: 10px;
+  padding-top: 12px;
+  overflow: auto;
+}
+
+.library-list {
+  display: grid;
+  grid-column: 1 / -1;
+  width: 100%;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 14px;
+  padding-top: 12px;
+}
+
+.library-card {
+  display: grid;
+  justify-items: center;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.library-card:hover .library-face,
+.library-card:focus-visible .library-face {
+  border-color: var(--accent);
+  box-shadow: 0 12px 24px rgba(0, 0, 0, 0.36);
+}
+
+.library-face {
+  position: relative;
+  width: min(100%, 240px);
+  aspect-ratio: 488 / 680;
+  border: 1px solid #060706;
+  border-radius: 6px;
+  overflow: hidden;
+  background: #0c0d0c;
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.28);
+}
+
+.library-face img,
+.library-face .card-back {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.library-count {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  min-width: 36px;
+  padding: 3px 6px;
+  border: 1px solid rgba(217, 183, 95, 0.6);
+  border-radius: 999px;
+  background: rgba(12, 13, 12, 0.86);
+  text-align: center;
+  color: var(--accent);
+  font-weight: 800;
+  font-size: 15px;
+}
+
+@media (max-width: 720px) {
+  .library-list {
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  }
+
+  .library-face {
+    width: min(100%, 190px);
+  }
+}
+
+.card-dialog {
+  width: min(430px, calc(100vw - 24px));
+  max-height: none;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  outline: none;
+  overflow: visible;
+  background: transparent;
+  box-shadow: none;
+}
+
+#cardDetail .card {
+  width: 100%;
+  border: 0;
+  border-radius: 0;
+  overflow: visible;
+  background: transparent;
+  box-shadow: none;
+  cursor: pointer;
+}
+
+#cardDetail .card.flip-reveal {
+  overflow: visible;
+}
+
+#cardDetail .flip-face {
+  overflow: visible;
+}
+

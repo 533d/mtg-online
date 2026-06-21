@@ -1,0 +1,142 @@
+.card {
+  position: relative;
+  width: var(--card-w);
+  aspect-ratio: 488 / 680;
+  flex: 0 0 var(--card-w);
+  border: 1px solid #060706;
+  border-radius: 6px;
+  overflow: hidden;
+  background: #0c0d0c;
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.28);
+}
+
+.card[draggable="true"] {
+  cursor: grab;
+}
+
+.card.dragging {
+  opacity: 0.55;
+}
+
+.card-drag-image,
+.library-drag-image {
+  position: fixed;
+  left: -1000px;
+  top: -1000px;
+  width: var(--card-w);
+  pointer-events: none;
+}
+
+.card-drag-image .card,
+.library-drag-image .card {
+  width: var(--card-w);
+  flex-basis: var(--card-w);
+  margin: 0;
+  opacity: 1;
+  transform: none !important;
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.28);
+}
+
+.card > * {
+  pointer-events: none;
+  user-select: none;
+}
+
+.card img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.card.tapped {
+  transform: rotate(90deg);
+}
+
+.card-back {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  padding: 8px;
+  background: linear-gradient(135deg, #3c241b, #1c2938 55%, #181512);
+  color: var(--accent);
+  font-weight: 800;
+  text-align: center;
+}
+
+.card.flip-reveal {
+  perspective: 700px;
+}
+
+.flip-face-stack {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  transform-style: preserve-3d;
+}
+
+.flip-face {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  backface-visibility: hidden;
+  transform-origin: center;
+  will-change: transform, opacity;
+}
+
+.flip-face-front {
+  animation: card-flip-front 600ms ease-in-out forwards;
+}
+
+.flip-face-back {
+  animation: card-flip-back 600ms ease-in-out forwards;
+  transform: rotateY(90deg);
+}
+
+@keyframes card-flip-front {
+  0% {
+    opacity: 1;
+    transform: rotateY(0);
+  }
+
+  48%,
+  100% {
+    opacity: 0.2;
+    transform: rotateY(-90deg);
+  }
+}
+
+@keyframes card-flip-back {
+  0%,
+  48% {
+    opacity: 0.2;
+    transform: rotateY(90deg);
+  }
+
+  100% {
+    opacity: 1;
+    transform: rotateY(0);
+  }
+}
+.fallback-face {
+  height: 100%;
+  display: grid;
+  grid-template-rows: auto auto 1fr;
+  gap: 8px;
+  padding: 9px;
+  background: #e7dfca;
+  color: #211d18;
+}
+
+.token-card .fallback-face {
+  background: linear-gradient(180deg, #ece5d4, #d8c89f);
+}
+
+.fallback-face strong {
+  font-size: 12px;
+}
+
+.fallback-face small {
+  font-size: 10px;
+}
+

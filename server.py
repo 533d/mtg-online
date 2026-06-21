@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import queue
 import random
 import re
 import socket
@@ -15,10 +16,25 @@ TABLE_LOCK = threading.Lock()
 CLIENT_TTL_SECONDS = 45
 EMPTY_TABLE_TTL_SECONDS = 5 * 60
 TABLE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{3,24}$")
+PORT = 5173
 
 
-class IPv6ThreadingHTTPServer(ThreadingHTTPServer):
+class DualStackThreadingHTTPServer(ThreadingHTTPServer):
     address_family = socket.AF_INET6
+
+    def server_bind(self):
+        if hasattr(socket, "IPV6_V6ONLY"):
+            self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+        super().server_bind()
+
+
+class IPv6OnlyThreadingHTTPServer(ThreadingHTTPServer):
+    address_family = socket.AF_INET6
+
+    def server_bind(self):
+        if hasattr(socket, "IPV6_V6ONLY"):
+            self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+        super().server_bind()
 
 
 class MtgTableHandler(SimpleHTTPRequestHandler):
@@ -29,6 +45,9 @@ class MtgTableHandler(SimpleHTTPRequestHandler):
             return
         if parsed.path == "/api/table/state":
             self.get_table_state(parsed)
+            return
+        if parsed.path == "/api/table/events":
+            self.stream_table_events(parsed)
             return
         super().do_GET()
 
@@ -114,6 +133,7 @@ class MtgTableHandler(SimpleHTTPRequestHandler):
                 "lastEmptyAt": now,
                 "state": None,
                 "clients": {},
+                "subscribers": {},
             }
             summary = table_summary(TABLES[table_id])
         self.send_json(201, {"table": summary})
@@ -152,6 +172,7 @@ class MtgTableHandler(SimpleHTTPRequestHandler):
         params = parse_qs(parsed.query)
         table_id = (params.get("tableId") or params.get("table") or [""])[0].strip()
         client_id = (params.get("clientId") or [""])[0].strip()
+        since = parse_number((params.get("since") or [""])[0])
         with TABLE_LOCK:
             cleanup_tables_locked()
             table = TABLES.get(table_id)
@@ -162,7 +183,24 @@ class MtgTableHandler(SimpleHTTPRequestHandler):
                 self.send_json(403, {"error": "join required"})
                 return
             touch_client_locked(table, client_id)
-            payload = {"table": table_summary(table), "state": table["state"]}
+            state = table["state"]
+            state_updated_at = state.get("updatedAt") if isinstance(state, dict) else None
+            if (
+                isinstance(since, (int, float))
+                and isinstance(state_updated_at, (int, float))
+                and since >= state_updated_at
+            ):
+                payload = {
+                    "table": table_summary(table),
+                    "unchanged": True,
+                    "updatedAt": state_updated_at,
+                }
+            else:
+                payload = {
+                    "table": table_summary(table),
+                    "state": state,
+                    "updatedAt": state_updated_at,
+                }
         self.send_json(200, payload)
 
     def set_table_state(self):
@@ -211,8 +249,82 @@ class MtgTableHandler(SimpleHTTPRequestHandler):
             table["updatedAt"] = now
             table["lastActivityAt"] = now
             touch_client_locked(table, client_id)
-            payload = {"ok": True, "updatedAt": state.get("updatedAt"), "table": table_summary(table)}
+            summary = table_summary(table)
+            event_payload = {
+                "table": summary,
+                "state": state,
+                "updatedAt": state.get("updatedAt"),
+                "sourceClientId": client_id,
+            }
+            publish_table_event_locked(table, "state", event_payload)
+            payload = {"ok": True, "updatedAt": state.get("updatedAt"), "table": summary}
         self.send_json(200, payload)
+
+    def stream_table_events(self, parsed):
+        params = parse_qs(parsed.query)
+        table_id = (params.get("tableId") or params.get("table") or [""])[0].strip()
+        client_id = (params.get("clientId") or [""])[0].strip()
+        if not table_id or not client_id:
+            self.send_json(400, {"error": "tableId and clientId are required"})
+            return
+
+        subscriber_id = f"{client_id}:{id(self)}"
+        events = queue.Queue(maxsize=8)
+        with TABLE_LOCK:
+            cleanup_tables_locked()
+            table = TABLES.get(table_id)
+            if not table:
+                self.send_json(404, {"error": "table not found"})
+                return
+            if not is_joined_client_locked(table, client_id):
+                self.send_json(403, {"error": "join required"})
+                return
+            touch_client_locked(table, client_id)
+            table.setdefault("subscribers", {})[subscriber_id] = events
+            initial_payload = {
+                "table": table_summary(table),
+                "state": table["state"],
+                "updatedAt": table["state"].get("updatedAt") if isinstance(table["state"], dict) else None,
+                "sourceClientId": "",
+            }
+
+        self.send_response(200)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Connection", "keep-alive")
+        self.send_header("X-Accel-Buffering", "no")
+        self.end_headers()
+
+        try:
+            self.write_sse("hello", initial_payload)
+            while True:
+                try:
+                    event_name, payload = events.get(timeout=15)
+                    self.write_sse(event_name, payload)
+                except queue.Empty:
+                    with TABLE_LOCK:
+                        table = TABLES.get(table_id)
+                        if not table or subscriber_id not in table.get("subscribers", {}):
+                            break
+                        touch_client_locked(table, client_id)
+                    self.wfile.write(b": ping\n\n")
+                    self.wfile.flush()
+        except (BrokenPipeError, ConnectionError, OSError):
+            pass
+        finally:
+            with TABLE_LOCK:
+                table = TABLES.get(table_id)
+                if table:
+                    table.get("subscribers", {}).pop(subscriber_id, None)
+
+    def write_sse(self, event_name, payload):
+        data = json.dumps(payload, ensure_ascii=False)
+        self.wfile.write(f"event: {event_name}\n".encode("utf-8"))
+        for line in data.splitlines() or [""]:
+            self.wfile.write(f"data: {line}\n".encode("utf-8"))
+        self.wfile.write(b"\n")
+        self.wfile.flush()
 
     def heartbeat_table(self):
         payload = self.safe_json_body()
@@ -272,6 +384,30 @@ class MtgTableHandler(SimpleHTTPRequestHandler):
 
 def now_ms():
     return int(time.time() * 1000)
+
+
+def parse_number(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def publish_table_event_locked(table, event_name, payload):
+    stale_subscribers = []
+    for subscriber_id, events in table.setdefault("subscribers", {}).items():
+        try:
+            events.put_nowait((event_name, payload))
+        except queue.Full:
+            try:
+                events.get_nowait()
+                events.put_nowait((event_name, payload))
+            except queue.Empty:
+                pass
+            except queue.Full:
+                stale_subscribers.append(subscriber_id)
+    for subscriber_id in stale_subscribers:
+        table["subscribers"].pop(subscriber_id, None)
 
 
 def generate_table_id_locked():
@@ -340,7 +476,32 @@ def table_summary(table):
     }
 
 
+def make_servers():
+    if socket.has_ipv6 and socket.has_dualstack_ipv6():
+        try:
+            return "dual-stack", [DualStackThreadingHTTPServer(("::", PORT), MtgTableHandler)]
+        except OSError:
+            pass
+
+    servers = [ThreadingHTTPServer(("0.0.0.0", PORT), MtgTableHandler)]
+    if socket.has_ipv6:
+        servers.append(IPv6OnlyThreadingHTTPServer(("::", PORT), MtgTableHandler))
+    return "separate-ipv4-ipv6" if len(servers) > 1 else "ipv4-only", servers
+
+
+def serve_all(servers):
+    for server in servers[1:]:
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+    servers[0].serve_forever()
+
+
 if __name__ == "__main__":
-    server = IPv6ThreadingHTTPServer(("::", 5173), MtgTableHandler)
-    print("Serving MTG lobby at http://[::]:5173/")
-    server.serve_forever()
+    mode, servers = make_servers()
+    print(f"Serving MTG lobby on port {PORT} ({mode})")
+    try:
+        serve_all(servers)
+    except KeyboardInterrupt:
+        for server in servers:
+            server.shutdown()
+            server.server_close()

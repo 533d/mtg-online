@@ -21,7 +21,8 @@ python3 server.py
 
 如果要让不在同一台电脑上的玩家加入，需要让对方访问运行 `server.py` 的这台机器：
 
-- 同一局域网内可访问 `http://主机局域网IP:5173/`。
+- 同一局域网内可访问 `http://主机局域网IPv4:5173/` 或 `http://[主机IPv6地址]:5173/`。
+- 运行服务的机器自己可以用 `http://127.0.0.1:5173/` 或 `http://[::1]:5173/`；其他设备必须使用运行服务机器的局域网地址，例如 `http://192.168.x.x:5173/`。
 - 不在同一局域网时，需要使用端口转发、VPN，或 ngrok / Cloudflare Tunnel 这类隧道工具，把本机的 `5173` 端口暴露出去。
 - 当前实现没有身份校验，拿到地址和牌桌密码的人都能加入并操作对应牌桌。
 
@@ -30,12 +31,38 @@ python3 server.py
 日期压缩包 `mtg-online-2026-06-12.zip` 包含运行需要的文件：
 
 - `index.html`
-- `app.js`
-- `styles.css`
+- `src/`
+- `styles/`
+- `app.js` 和 `styles.css` 兼容说明文件
 - `server.py`
 - `README.md`
 
 解压后在目录内运行 `python3 server.py` 即可启动。
+
+## 文件结构
+
+前端不需要构建工具，`index.html` 会直接按顺序加载拆分后的脚本和样式。
+
+```text
+src/
+  constants.js       常量、机制库、翻译词典
+  sync-lobby.js      大厅、牌桌同步、心跳、重连
+  state.js           初始状态、迁移、规范化、本地缓存
+  render.js          主牌桌、状态卡、手牌、战场和卡面渲染
+  actions-drag.js    玩家操作、拖拽、横置、标记、衍生物
+  zones-cards.js     牌区弹窗、牌区移动、牌表导入、Scryfall 查询
+  lookup-init.js     查询工具、日志、入口事件绑定
+
+styles/
+  base.css           全局变量、基础元素
+  lobby.css          大厅
+  topbar.css         顶部控制栏、查询面板
+  panels.css         玩家状态卡、法术力、区域按钮
+  table.css          战场、手牌、标记工具栏
+  cards.css          卡牌、卡背、翻转动画
+  dialogs.css        牌区、大图、置入牌库弹窗
+  responsive.css     小屏幕适配
+```
 
 ## 当前功能
 
@@ -81,7 +108,8 @@ SB: 2 Negate
 
 - 客户端创建或加入牌桌后，后续请求都会携带牌桌号和本机连接 ID。
 - 客户端操作后 POST 整张牌桌状态到 `/api/table/state`。
-- 客户端每秒 GET `/api/table/state` 拉取当前牌桌的最新状态。
+- 客户端每秒 GET `/api/table/state` 拉取当前牌桌的最新状态；请求会携带本地 `updatedAt`，如果服务端状态没有更新，只返回轻量的 `{ "unchanged": true }`。
+- 客户端上传状态失败时会保留待上传标记，并在后续自动重试。
 - 客户端定期向 `/api/table/heartbeat` 发送心跳，离开页面时向 `/api/table/leave` 报告退出。
 - 服务端只在内存中保存牌桌状态，重启服务会清空线上牌桌。
 - 不区分玩家身份，不做合法性或作弊校验。

@@ -1,0 +1,73 @@
+@media (max-width: 880px) {
+  .lobby-screen {
+    padding: 18px 10px;
+  }
+
+  .lobby-card {
+    padding: 12px;
+  }
+
+  .lobby-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .table-card-main,
+  .lobby-head {
+    align-items: start;
+  }
+
+  .topbar,
+  .table {
+    padding-left: 10px;
+    padding-right: 10px;
+  }
+
+  .top-controls {
+    width: 100%;
+    grid-template-columns: 1fr;
+  }
+
+  .session-tools {
+    min-width: 0;
+  }
+
+  .session-actions,
+  .random-tools {
+    grid-template-columns: 1fr;
+  }
+
+  .top-import {
+    grid-template-columns: 1fr;
+  }
+
+  .lookup-row {
+    grid-template-columns: 1fr;
+  }
+
+  .marker-toolbar {
+    grid-template-columns: minmax(82px, auto) minmax(82px, auto) minmax(120px, 1fr) 42px auto minmax(210px, 1fr);
+  }
+
+  .hand-row {
+    grid-template-columns: minmax(0, 1fr) max-content;
+  }
+
+  .hand-zone-stack {
+    grid-template-columns: repeat(4, var(--card-w));
+    width: max-content;
+    padding: 5px;
+  }
+
+  .player-area {
+    width: min(220px, calc(50vw - 16px));
+  }
+
+  .opponent {
+    right: 10px;
+  }
+
+  .self {
+    right: 10px;
+  }
+
+}
