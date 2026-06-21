@@ -14,7 +14,6 @@ const TABLE_EVENTS_URL = "/api/table/events";
 const TABLE_HEARTBEAT_URL = "/api/table/heartbeat";
 const TABLE_LEAVE_URL = "/api/table/leave";
 const TABLE_POLL_MS = 1000;
-const TABLE_FALLBACK_POLL_MS = 5000;
 const TABLE_HEARTBEAT_MS = 15000;
 const BATTLE_GRID_SIZE = 13;
 const BATTLE_CARD_GRID_W = 14;

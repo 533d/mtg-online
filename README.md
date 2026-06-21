@@ -28,12 +28,11 @@ python3 server.py
 
 ## 分发
 
-日期压缩包 `mtg-online-2026-06-12.zip` 包含运行需要的文件：
+分发压缩包需要包含这些文件：
 
 - `index.html`
 - `src/`
 - `styles/`
-- `app.js` 和 `styles.css` 兼容说明文件
 - `server.py`
 - `README.md`
 

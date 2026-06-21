@@ -102,13 +102,8 @@ class MtgTableHandler(SimpleHTTPRequestHandler):
         self.send_json(200, {"tables": tables})
 
     def create_table(self):
-        try:
-            payload = self.read_json_body()
-        except ValueError:
-            self.send_json(400, {"error": "invalid content length"})
-            return
-        except json.JSONDecodeError:
-            self.send_json(400, {"error": "invalid json"})
+        payload = self.safe_json_body()
+        if payload is None:
             return
 
         requested_id = str(payload.get("tableId") or "").strip()
@@ -139,13 +134,8 @@ class MtgTableHandler(SimpleHTTPRequestHandler):
         self.send_json(201, {"table": summary})
 
     def join_table(self):
-        try:
-            payload = self.read_json_body()
-        except ValueError:
-            self.send_json(400, {"error": "invalid content length"})
-            return
-        except json.JSONDecodeError:
-            self.send_json(400, {"error": "invalid json"})
+        payload = self.safe_json_body()
+        if payload is None:
             return
 
         table_id = str(payload.get("tableId") or "").strip()
@@ -204,13 +194,8 @@ class MtgTableHandler(SimpleHTTPRequestHandler):
         self.send_json(200, payload)
 
     def set_table_state(self):
-        try:
-            payload = self.read_json_body()
-        except ValueError:
-            self.send_json(400, {"error": "invalid content length"})
-            return
-        except json.JSONDecodeError:
-            self.send_json(400, {"error": "invalid json"})
+        payload = self.safe_json_body()
+        if payload is None:
             return
 
         table_id = str(payload.get("tableId") or "").strip()
@@ -254,7 +239,6 @@ class MtgTableHandler(SimpleHTTPRequestHandler):
                 "table": summary,
                 "state": state,
                 "updatedAt": state.get("updatedAt"),
-                "sourceClientId": client_id,
             }
             publish_table_event_locked(table, "state", event_payload)
             payload = {"ok": True, "updatedAt": state.get("updatedAt"), "table": summary}
@@ -285,7 +269,6 @@ class MtgTableHandler(SimpleHTTPRequestHandler):
                 "table": table_summary(table),
                 "state": table["state"],
                 "updatedAt": table["state"].get("updatedAt") if isinstance(table["state"], dict) else None,
-                "sourceClientId": "",
             }
 
         self.send_response(200)

@@ -246,17 +246,6 @@ function tableStorageKey(tableId = activeTable?.id) {
   return tableId ? `${STORAGE_KEY}:${tableId}` : STORAGE_KEY;
 }
 
-function loadState(tableId = activeTable?.id) {
-  const raw = localStorage.getItem(tableStorageKey(tableId));
-  if (!raw) return makeInitialState();
-  try {
-    const loaded = JSON.parse(raw);
-    return migrateState(loaded);
-  } catch {
-    return makeInitialState();
-  }
-}
-
 function loadLastTables() {
   try {
     const value = JSON.parse(localStorage.getItem(LAST_TABLES_KEY) || "[]");

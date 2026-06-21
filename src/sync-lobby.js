@@ -128,7 +128,7 @@ function applyIncomingState(incoming) {
 }
 
 function startTableEventStream() {
-  if (!("EventSource" in window) || !activeTable) return false;
+  if (!("EventSource" in window) || !activeTable) return;
   if (tableEventSource) tableEventSource.close();
 
   const tableId = activeTable.id;
@@ -143,7 +143,6 @@ function startTableEventStream() {
   };
   tableEventSource.addEventListener("hello", (event) => handleTableEventMessage(event, tableId));
   tableEventSource.addEventListener("state", (event) => handleTableEventMessage(event, tableId));
-  return true;
 }
 
 function handleTableEventMessage(event, tableId) {
@@ -172,11 +171,11 @@ async function startOnlineSync() {
   } else {
     queueTablePublish();
   }
-  const usingEventStream = startTableEventStream();
+  startTableEventStream();
   tablePollTimer = window.setInterval(async () => {
     const incoming = await fetchTableState();
     applyIncomingState(incoming);
-  }, usingEventStream ? TABLE_FALLBACK_POLL_MS : TABLE_POLL_MS);
+  }, TABLE_POLL_MS);
   tableHeartbeatTimer = window.setInterval(sendTableHeartbeat, TABLE_HEARTBEAT_MS);
   sendTableHeartbeat();
 }

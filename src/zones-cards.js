@@ -227,32 +227,6 @@ function putCardInZone(player, card, zone) {
   }
 }
 
-function putCardsInZone(player, cards, zone) {
-  if (!cards.length) return;
-  if (zone === "library" || zone === "library-top") {
-    for (let index = cards.length - 1; index >= 0; index -= 1) {
-      player.library.unshift(cards[index]);
-    }
-    return;
-  }
-  if (zone === "library-bottom") {
-    player.library.push(...cards);
-    return;
-  }
-  if (zone === "library-random") {
-    cards.forEach((card) => {
-      const index = Math.floor(Math.random() * (player.library.length + 1));
-      player.library.splice(index, 0, card);
-    });
-    return;
-  }
-  if (zone === "hand") {
-    player.hand.push(...cards);
-    return;
-  }
-  player[zone].unshift(...cards);
-}
-
 function makeFaceDownPlaceholder() {
   return {
     id: makeId(),
@@ -336,21 +310,7 @@ function renderLibraryList(player) {
   const rows = deckList
     .map((entry) => ({ ...entry, remaining: counts.get(entry.name) || 0 }))
     .filter((entry) => entry.remaining > 0);
-  if (!rows.length) return "";
-  return `
-    <div class="library-list">
-      ${rows
-        .map((entry) => {
-          const card = state.catalog[entry.name] || { name: entry.name, typeLine: "", image: "" };
-          return `
-            <button class="library-card" type="button" data-card-key="${escapeHtml(entry.name)}" data-remaining="${entry.remaining}" aria-label="查看 ${escapeHtml(card.name)} 大图">
-              <div class="library-face">
-                ${renderLibraryFace(card, entry.remaining)}
-              </div>
-            </button>`;
-        })
-        .join("")}
-    </div>`;
+  return renderCardListRows(rows);
 }
 
 function renderExtraList(player) {
@@ -704,4 +664,3 @@ function catalogSearchName(key, card) {
   if (!key.startsWith("token:")) return key;
   return card?.searchName || tokenSearchName(card?.name || key);
 }
-
