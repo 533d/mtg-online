@@ -7,13 +7,20 @@
     padding: 12px;
   }
 
-  .lobby-grid {
-    grid-template-columns: 1fr;
-  }
-
   .table-card-main,
   .lobby-head {
     align-items: start;
+  }
+
+  .lobby-actions {
+    justify-content: start;
+    min-height: 70px;
+    overflow-x: auto;
+  }
+
+  .lobby-action {
+    --action-size: 56px;
+    --action-open-w: 128px;
   }
 
   .topbar,
@@ -25,6 +32,7 @@
   .top-controls {
     width: 100%;
     grid-template-columns: 1fr;
+    height: auto;
   }
 
   .session-tools {
@@ -33,6 +41,11 @@
 
   .session-actions,
   .random-tools {
+    grid-template-columns: 1fr;
+  }
+
+  .lobby-identity-row,
+  .table-join-row {
     grid-template-columns: 1fr;
   }
 

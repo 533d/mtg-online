@@ -4,48 +4,18 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>MTG Online Table</title>
-    <link rel="stylesheet" href="./styles/base.css?v=20260621-8" />
-    <link rel="stylesheet" href="./styles/lobby.css?v=20260621-8" />
-    <link rel="stylesheet" href="./styles/topbar.css?v=20260621-8" />
-    <link rel="stylesheet" href="./styles/panels.css?v=20260621-8" />
-    <link rel="stylesheet" href="./styles/table.css?v=20260621-8" />
-    <link rel="stylesheet" href="./styles/cards.css?v=20260621-8" />
-    <link rel="stylesheet" href="./styles/dialogs.css?v=20260621-8" />
-    <link rel="stylesheet" href="./styles/responsive.css?v=20260621-8" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23111413'/%3E%3Crect x='15' y='8' width='34' height='48' rx='4' fill='%23262d29' stroke='%23d7c7a5' stroke-opacity='.45' stroke-width='2'/%3E%3Ccircle cx='32' cy='31' r='10' fill='none' stroke='%23d7c7a5' stroke-opacity='.5' stroke-width='2'/%3E%3Cpath d='M25 38h14M24 24h16' stroke='%23d7c7a5' stroke-opacity='.45' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E" />
+    <link rel="stylesheet" href="./styles/base.css?v=20260629-4" />
+    <link rel="stylesheet" href="./styles/lobby.css?v=20260701-2" />
+    <link rel="stylesheet" href="./styles/topbar.css?v=20260630-2" />
+    <link rel="stylesheet" href="./styles/panels.css?v=20260629-4" />
+    <link rel="stylesheet" href="./styles/table.css?v=20260629-4" />
+    <link rel="stylesheet" href="./styles/cards.css?v=20260630-4" />
+    <link rel="stylesheet" href="./styles/dialogs.css?v=20260629-4" />
+    <link rel="stylesheet" href="./styles/responsive.css?v=20260701-1" />
   </head>
   <body>
-    <section id="lobby" class="lobby-screen">
-      <div class="lobby-card">
-        <div class="lobby-head">
-          <span class="mark">MTG</span>
-          <div>
-            <h1>选择牌桌</h1>
-            <p>创建一个牌桌，或输入牌桌号加入正在进行的对局。</p>
-          </div>
-        </div>
-
-        <div class="lobby-grid">
-          <form id="createTableForm" class="lobby-panel">
-            <h2>创建牌桌</h2>
-            <input id="createTableId" type="text" maxlength="24" placeholder="牌桌号，留空自动生成" autocomplete="off" />
-            <input id="createTablePassword" type="password" placeholder="密码，可为空" autocomplete="new-password" />
-            <button type="submit">创建并进入</button>
-          </form>
-
-          <form id="searchTableForm" class="lobby-panel">
-            <h2>查找牌桌</h2>
-            <div class="lobby-search-row">
-              <input id="tableSearchInput" type="search" placeholder="输入牌桌号" autocomplete="off" />
-              <button type="submit">查询</button>
-            </div>
-            <button id="refreshTables" type="button">刷新大厅</button>
-          </form>
-        </div>
-
-        <div id="lobbyMessage" class="lobby-message" role="status"></div>
-        <div id="tableList" class="table-list" aria-live="polite"></div>
-      </div>
-    </section>
+    <section id="lobby" class="lobby-screen"></section>
 
     <div id="app" class="app-shell" hidden>
       <header class="topbar">
@@ -72,19 +42,31 @@
                 <button id="rollD6" type="button">D6</button>
                 <button id="rollD20" type="button">D20</button>
               </div>
+              <div class="top-import">
+                <textarea id="deckImport" placeholder="导入牌表，例如：4 Lightning Bolt&#10;8 Island"></textarea>
+                <button id="importDeckTop" type="button">导入并洗牌</button>
+              </div>
             </div>
-            <div class="top-import">
-              <textarea id="deckImport" placeholder="导入牌表，例如：4 Lightning Bolt&#10;8 Island"></textarea>
-              <button id="importDeckTop" type="button">导入并洗牌</button>
-            </div>
-            <div class="lookup-panel">
+            <div id="lookupDock" class="lookup-panel dockable-panel" data-dock-id="lookup">
+              <div class="dock-handle" data-dock-handle aria-label="拖动查询面板" title="拖动查询"></div>
               <div class="lookup-row">
                 <input id="lookupInput" type="search" placeholder="查牌名、机制，或 翻译: trample" />
                 <button id="lookupButton" type="button">搜索</button>
               </div>
               <div id="lookupOutput" class="lookup-output">输入牌名或机制</div>
             </div>
-            <div id="logPanel" class="log-panel"></div>
+            <div id="chatDock" class="chat-dock dockable-panel" data-dock-id="chat">
+              <div class="dock-handle" data-dock-handle aria-label="拖动聊天面板" title="拖动聊天"></div>
+              <div id="chatMessages" class="chat-messages" aria-live="polite"></div>
+              <form id="chatForm" class="chat-form">
+                <input id="chatInput" type="text" maxlength="160" placeholder="发送聊天" autocomplete="off" />
+                <button type="submit">发送</button>
+              </form>
+            </div>
+            <div id="logDock" class="log-dock dockable-panel" data-dock-id="log">
+              <div class="dock-handle" data-dock-handle aria-label="拖动日志面板" title="拖动日志"></div>
+              <div id="logPanel" class="log-panel"></div>
+            </div>
           </div>
         </details>
       </header>
@@ -127,12 +109,14 @@
       </div>
     </dialog>
 
-    <script src="./src/constants.js?v=20260621-8"></script>
-    <script src="./src/sync-lobby.js?v=20260621-8"></script>
-    <script src="./src/state.js?v=20260621-8"></script>
-    <script src="./src/render.js?v=20260621-8"></script>
-    <script src="./src/actions-drag.js?v=20260621-8"></script>
-    <script src="./src/zones-cards.js?v=20260621-8"></script>
-    <script src="./src/lookup-init.js?v=20260621-8"></script>
+    <script src="./src/constants.js?v=20260621-13"></script>
+    <script src="./src/lobby-view.js?v=20260701-1"></script>
+    <script src="./src/sync-lobby.js?v=20260621-13"></script>
+    <script src="./src/state.js?v=20260621-13"></script>
+    <script src="./src/render.js?v=20260621-13"></script>
+    <script src="./src/actions-drag.js?v=20260630-1"></script>
+    <script src="./src/dockable-panels.js?v=20260629-2"></script>
+    <script src="./src/zones-cards.js?v=20260630-1"></script>
+    <script src="./src/lookup-init.js?v=20260621-13"></script>
   </body>
 </html>

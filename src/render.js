@@ -16,6 +16,7 @@ function render(options = {}) {
   renderPlayerPanel(els.opponentArea, opponentId, "opponent");
   renderPlayerPanel(els.selfArea, selfId, "self");
   renderLog();
+  renderChat();
   renderTimer();
   renderSyncStatus();
   observeBattlefieldResize();
@@ -279,10 +280,12 @@ function bindPlayerPanelDrag(root, playerId) {
 }
 
 function renderSharedBattlefield(root, selfId, opponentId) {
+  const spectatorView = seat === "spectator";
   root.innerHTML = `
-    <div class="battlefield-wrap">
+    <div class="battlefield-wrap ${spectatorView ? "spectator-view" : ""}">
+      ${spectatorView ? renderHandRow(opponentId, true, { reveal: true }) : ""}
       ${renderBattlefield(selfId, opponentId)}
-      ${renderHandRow(selfId, false)}
+      ${renderHandRow(selfId, false, { reveal: spectatorView })}
       ${renderMarkerToolbar(selfId, opponentId)}
     </div>
   `;
@@ -471,15 +474,16 @@ function extraZone(playerId, entries, canControl) {
     </button>`;
 }
 
-function renderHandRow(playerId, isOpponent) {
+function renderHandRow(playerId, isOpponent, options = {}) {
   const player = state.players[playerId];
   const canControl = seat === playerId;
-  const handClass = `${isOpponent ? "opponent-hand" : "self-hand"} ${player.hand.length ? "" : "empty"}`;
+  const canReveal = canControl || options.reveal;
+  const handClass = `${isOpponent ? "opponent-hand" : "self-hand"} ${canReveal ? "revealed-hand" : ""} ${player.hand.length ? "" : "empty"}`;
   const handStyle = handLayoutStyle(playerId);
   return `
     <div class="hand-row ${isOpponent ? "opponent-hand-row" : "self-hand-row"}">
       <div class="hand-strip ${handClass}" data-player="${playerId}" data-hand-count="${player.hand.length}" data-drop-zone="hand"${handStyle}>
-        ${renderHand(playerId, isOpponent, canControl)}
+        ${renderHand(playerId, isOpponent, canControl, canReveal)}
         <span class="hand-count">${player.hand.length}</span>
       </div>
       <aside class="hand-zone-stack" aria-label="${escapeHtml(player.name)}区域">
@@ -491,10 +495,10 @@ function renderHandRow(playerId, isOpponent) {
     </div>`;
 }
 
-function renderHand(playerId, isOpponent, canControl) {
+function renderHand(playerId, isOpponent, canControl, canReveal = canControl) {
   const cards = state.players[playerId].hand;
   if (!cards.length) return "";
-  if (isOpponent && !canControl) {
+  if (isOpponent && !canReveal) {
     return cards.map((_, index) => renderCardBack(handCardStyle(index, cards.length))).join("");
   }
   return cards

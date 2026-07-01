@@ -1,13 +1,20 @@
 .card {
+  --card-back-art: url("../card-images/card-back.webp");
   position: relative;
   width: var(--card-w);
   aspect-ratio: 488 / 680;
   flex: 0 0 var(--card-w);
-  border: 1px solid #060706;
+  border: 1px solid rgba(5, 4, 3, 0.96);
   border-radius: 6px;
   overflow: hidden;
-  background: #0c0d0c;
-  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.28);
+  background: #0b0907;
+  box-shadow:
+    0 9px 20px rgba(0, 0, 0, 0.34),
+    0 0 0 1px rgba(229, 189, 104, 0.06);
+  transition:
+    border-color 160ms ease,
+    box-shadow 160ms ease,
+    filter 160ms ease;
 }
 
 .card[draggable="true"] {
@@ -16,6 +23,11 @@
 
 .card.dragging {
   opacity: 0.55;
+}
+
+.card:hover {
+  border-color: rgba(229, 189, 104, 0.48);
+  filter: saturate(1.04);
 }
 
 .card-drag-image,
@@ -34,7 +46,9 @@
   margin: 0;
   opacity: 1;
   transform: none !important;
-  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.28);
+  box-shadow:
+    0 14px 30px rgba(0, 0, 0, 0.42),
+    0 0 0 1px rgba(229, 189, 104, 0.18);
 }
 
 .card > * {
@@ -54,14 +68,21 @@
 }
 
 .card-back {
-  display: grid;
-  place-items: center;
+  position: relative;
+  overflow: hidden;
+  display: block;
   height: 100%;
-  padding: 8px;
-  background: linear-gradient(135deg, #3c241b, #1c2938 55%, #181512);
-  color: var(--accent);
-  font-weight: 800;
-  text-align: center;
+  padding: 0;
+  border: 1px solid rgba(5, 4, 3, 0.96);
+  background: var(--card-back-art);
+  background-position: center;
+  background-size: cover;
+  color: transparent;
+}
+
+.card-back::before,
+.card-back::after {
+  display: none;
 }
 
 .card.flip-reveal {
@@ -128,12 +149,16 @@
   grid-template-rows: auto auto 1fr;
   gap: 8px;
   padding: 9px;
-  background: #e7dfca;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.22), transparent),
+    #e7dfca;
   color: #211d18;
 }
 
 .token-card .fallback-face {
-  background: linear-gradient(180deg, #ece5d4, #d8c89f);
+  background:
+    radial-gradient(circle at 85% 12%, rgba(229, 189, 104, 0.34), transparent 42%),
+    linear-gradient(180deg, #ece5d4, #d8c89f);
 }
 
 .fallback-face strong {

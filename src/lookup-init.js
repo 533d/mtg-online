@@ -320,6 +320,23 @@ function renderLog() {
   els.logPanel.innerHTML = state.log.map((line) => `<div>${escapeHtml(line)}</div>`).join("");
 }
 
+function renderChat() {
+  if (!els.chatMessages) return;
+  const messages = normalizeChat(state.chat);
+  state.chat = messages;
+  els.chatMessages.innerHTML = messages
+    .map(
+      (message) => `
+        <div class="chat-message">
+          <span>${escapeHtml(formatClock(message.at))}</span>
+          <strong>${escapeHtml(message.author)}</strong>
+          <p>${escapeHtml(message.text)}</p>
+        </div>`,
+    )
+    .join("");
+  els.chatMessages.scrollTop = els.chatMessages.scrollHeight;
+}
+
 function escapeHtml(value) {
   return String(value)
     .replaceAll("&", "&amp;")
@@ -330,13 +347,15 @@ function escapeHtml(value) {
 }
 
 function cycleSeat() {
+  const previousSeat = seat;
+  const previousLabel = seatDisplayName(previousSeat);
   const currentIndex = SEAT_ORDER.indexOf(seat);
   seat = SEAT_ORDER[(currentIndex + 1) % SEAT_ORDER.length];
   resetPanelPositions();
   sessionStorage.setItem("mtg-online-seat", seat);
   localStorage.removeItem("mtg-online-seat");
   updateSeatToggle();
-  render();
+  saveState(`身份切换：${previousLabel} -> ${seatDisplayName(seat)}`, { captureLayout: false });
 }
 
 function toggleTimer() {
@@ -380,6 +399,30 @@ function rollDie(sides) {
   recordRandomResult(`D${sides}`, Math.floor(Math.random() * sides) + 1);
 }
 
+function sendChatMessage(event) {
+  event.preventDefault();
+  const text = String(els.chatInput?.value || "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 160);
+  if (!text) {
+    els.chatInput?.focus();
+    return;
+  }
+  state.chat = normalizeChat([
+    ...(state.chat || []),
+    {
+      id: makeId(),
+      at: Date.now(),
+      author: seatDisplayName(seat),
+      seat,
+      text,
+    },
+  ]);
+  els.chatInput.value = "";
+  saveState(null, { captureLayout: false });
+}
+
 els.createTableForm.addEventListener("submit", createTable);
 els.searchTableForm.addEventListener("submit", (event) => {
   event.preventDefault();
@@ -413,6 +456,7 @@ els.lookupInput.addEventListener("keydown", (event) => {
   event.preventDefault();
   handleLookup();
 });
+els.chatForm.addEventListener("submit", sendChatMessage);
 
 els.closeZone.addEventListener("click", () => els.zoneDialog.close());
 closeDialogOnBackdropClick(els.zoneDialog);
@@ -445,5 +489,6 @@ window.addEventListener("pagehide", () => {
 });
 
 window.setInterval(renderTimer, 500);
+initLobbyIdentityControls();
 showLobby();
 refreshLobbyTables();

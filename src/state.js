@@ -95,6 +95,8 @@ const els = {
   createTableForm: document.querySelector("#createTableForm"),
   createTableId: document.querySelector("#createTableId"),
   createTablePassword: document.querySelector("#createTablePassword"),
+  createJoinSeat: document.querySelector("#createJoinSeat"),
+  createJoinName: document.querySelector("#createJoinName"),
   searchTableForm: document.querySelector("#searchTableForm"),
   tableSearchInput: document.querySelector("#tableSearchInput"),
   refreshTables: document.querySelector("#refreshTables"),
@@ -115,6 +117,9 @@ const els = {
   lookupInput: document.querySelector("#lookupInput"),
   lookupButton: document.querySelector("#lookupButton"),
   lookupOutput: document.querySelector("#lookupOutput"),
+  chatMessages: document.querySelector("#chatMessages"),
+  chatForm: document.querySelector("#chatForm"),
+  chatInput: document.querySelector("#chatInput"),
   opponentArea: document.querySelector("#opponentArea"),
   battlefieldArea: document.querySelector("#battlefieldArea"),
   selfArea: document.querySelector("#selfArea"),
@@ -140,13 +145,16 @@ function normalizeSeat(value) {
 }
 
 function seatDisplayName(playerId) {
-  if (playerId === "spectator") return SEAT_LABELS.spectator;
+  if (playerId === "spectator") return spectatorName || SEAT_LABELS.spectator;
   return state.players?.[playerId]?.name || SEAT_LABELS[playerId] || SEAT_LABELS.p1;
 }
 
 function updateSeatToggle() {
   if (els.seatToggle) {
-    els.seatToggle.textContent = `视角：${seatDisplayName(seat)}`;
+    const label = seat === "spectator" && spectatorName
+      ? `${SEAT_LABELS.spectator}：${spectatorName}`
+      : seatDisplayName(seat);
+    els.seatToggle.textContent = `视角：${label}`;
   }
 }
 
@@ -157,6 +165,7 @@ function visibleSeat() {
 let state = makeInitialState();
 localStorage.removeItem("mtg-online-seat");
 let seat = normalizeSeat(sessionStorage.getItem("mtg-online-seat"));
+let spectatorName = sessionStorage.getItem("mtg-online-spectator-name") || "";
 let lookupCardDetail = null;
 let cardDetailState = null;
 let cardDetailRequestId = 0;
@@ -174,6 +183,7 @@ function makeInitialState() {
     timer: makeTimerState(),
     catalog: { ...sampleCatalog },
     log: ["牌桌已创建"],
+    chat: [],
     players: {
       p1: makePlayer("P1"),
       p2: makePlayer("P2"),
@@ -357,6 +367,7 @@ function migrateState(loaded) {
     loaded.catalog = resetMismatchedCatalogEntries(loaded.catalog);
   }
   loaded.log = Array.isArray(loaded.log) ? loaded.log : [];
+  loaded.chat = normalizeChat(loaded.chat);
   loaded.timer = normalizeTimerState(loaded.timer);
   if (loaded.version !== STATE_VERSION) {
     loaded.version = STATE_VERSION;
@@ -376,6 +387,20 @@ function migrateState(loaded) {
     player.deckList = normalizeDeckList(player.deckList?.length ? player.deckList : inferDeckList(player));
   });
   return loaded;
+}
+
+function normalizeChat(entries) {
+  return (Array.isArray(entries) ? entries : [])
+    .filter((entry) => entry && typeof entry === "object")
+    .map((entry) => ({
+      id: entry.id || makeId(),
+      at: Number(entry.at) || Date.now(),
+      author: String(entry.author || "玩家").slice(0, 24),
+      seat: normalizeSeat(entry.seat),
+      text: String(entry.text || "").replace(/\s+/g, " ").trim().slice(0, 160),
+    }))
+    .filter((entry) => entry.text)
+    .slice(-80);
 }
 
 function removeLegacyBattlefieldPlaceholders(player) {

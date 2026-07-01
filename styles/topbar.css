@@ -1,7 +1,13 @@
 .topbar {
-  padding: 6px 16px;
-  border-bottom: 1px solid var(--line);
-  background: rgba(20, 23, 22, 0.92);
+  position: relative;
+  z-index: 20;
+  padding: 8px 16px;
+  border-bottom: 1px solid rgba(229, 189, 104, 0.22);
+  background:
+    linear-gradient(90deg, rgba(217, 184, 101, 0.065), transparent 28%, rgba(134, 192, 200, 0.06)),
+    rgba(31, 37, 34, 0.86);
+  backdrop-filter: blur(14px);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.28);
 }
 
 .top-drawer {
@@ -32,6 +38,7 @@
   color: var(--muted);
   font-size: 12px;
   font-weight: 500;
+  background: rgba(229, 189, 104, 0.055);
 }
 
 .top-drawer[open] summary::after {
@@ -43,10 +50,17 @@
   place-items: center;
   width: 44px;
   height: 44px;
-  border: 1px solid var(--accent);
+  border: 1px solid rgba(221, 210, 184, 0.24);
   border-radius: 50%;
-  color: var(--accent);
+  background:
+    radial-gradient(circle at 50% 42%, rgba(221, 210, 184, 0.12), transparent 36%),
+    linear-gradient(145deg, #2a302c, #111514 58%, #24221d);
+  color: #d7c7a5;
   font-weight: 800;
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 247, 230, 0.04),
+    0 0 0 4px rgba(221, 210, 184, 0.045),
+    0 12px 24px rgba(0, 0, 0, 0.24);
 }
 
 h1,
@@ -62,24 +76,41 @@ h1 {
 
 .zone-block small,
 .log-panel,
+.chat-messages,
 .dialog-head p {
   color: var(--muted);
   font-size: 12px;
 }
 
 .top-controls {
+  --dock-panel-min: 280px;
   display: grid;
-  grid-template-columns: minmax(300px, 320px) minmax(240px, 360px) minmax(360px, 1fr) minmax(220px, 320px);
+  grid-template-columns: minmax(300px, 320px) repeat(auto-fit, minmax(var(--dock-panel-min), 1fr));
   align-items: stretch;
   gap: 12px;
+  height: 304px;
   min-width: 0;
+  padding-top: 8px;
+}
+
+.top-controls.dock-snap-target {
+  border-radius: 10px;
+  box-shadow:
+    inset 0 0 0 2px rgba(217, 183, 95, 0.58),
+    0 0 0 5px rgba(217, 183, 95, 0.12);
 }
 
 .session-tools {
   display: grid;
   gap: 6px;
-  align-content: stretch;
+  grid-template-rows: auto auto auto auto minmax(0, 1fr);
+  align-content: start;
   min-width: 320px;
+  min-height: 0;
+  padding: 8px;
+  border: 1px solid rgba(229, 189, 104, 0.16);
+  border-radius: 8px;
+  background: rgba(37, 43, 40, 0.46);
 }
 
 .table-timer {
@@ -91,7 +122,9 @@ h1 {
   padding: 8px;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: rgba(32, 37, 34, 0.82);
+  background:
+    linear-gradient(135deg, rgba(217, 184, 101, 0.06), transparent 46%),
+    rgba(38, 45, 41, 0.78);
 }
 
 .table-timer strong {
@@ -110,7 +143,7 @@ h1 {
   padding: 0 9px;
   border: 1px solid rgba(61, 70, 63, 0.88);
   border-radius: 6px;
-  background: rgba(21, 24, 22, 0.72);
+  background: rgba(31, 37, 34, 0.78);
   color: var(--muted);
   font-size: 12px;
   white-space: nowrap;
@@ -162,11 +195,13 @@ h1 {
   width: 100%;
   height: 100%;
   min-height: 0;
-  max-height: 260px;
+  max-height: none;
   resize: vertical;
   border: 1px solid var(--line);
   border-radius: 6px;
-  background: #151816;
+  background:
+    linear-gradient(180deg, rgba(255, 247, 230, 0.035), transparent),
+    rgba(31, 37, 34, 0.78);
   color: var(--text);
   padding: 8px 10px;
   font-size: 13px;
@@ -179,6 +214,13 @@ h1 {
   grid-template-rows: auto minmax(0, 1fr);
   gap: 8px;
   min-width: 0;
+  min-height: 0;
+  padding: 8px;
+  border: 1px solid rgba(229, 189, 104, 0.16);
+  border-radius: 8px;
+  background:
+    linear-gradient(180deg, rgba(255, 247, 230, 0.04), transparent),
+    rgba(37, 43, 40, 0.46);
 }
 
 .lookup-row {
@@ -192,19 +234,22 @@ h1 {
   height: 34px;
   border: 1px solid var(--line);
   border-radius: 6px;
-  background: #151816;
+  background: rgba(31, 37, 34, 0.78);
   color: var(--text);
   padding: 0 10px;
 }
 
 .lookup-output {
   min-height: 66px;
-  max-height: 260px;
+  max-height: none;
+  height: 100%;
   overflow: auto;
   padding: 10px;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: rgba(32, 37, 34, 0.82);
+  background:
+    linear-gradient(135deg, rgba(217, 184, 101, 0.035), transparent 34%),
+    rgba(39, 46, 42, 0.82);
   color: var(--muted);
   font-size: 12px;
   line-height: 1.45;
@@ -280,6 +325,7 @@ h1 {
   overflow: hidden;
   background: #0c0d0c;
   cursor: zoom-in;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.32);
 }
 
 .lookup-card-face img,
@@ -327,3 +373,220 @@ h1 {
   color: var(--muted);
 }
 
+.dockable-panel {
+  position: relative;
+  min-width: 0;
+}
+
+.log-dock {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+}
+
+.chat-dock {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 8px;
+  min-width: 0;
+  min-height: 0;
+  padding: 8px;
+  border: 1px solid rgba(229, 189, 104, 0.16);
+  border-radius: 8px;
+  background:
+    linear-gradient(180deg, rgba(255, 247, 230, 0.04), transparent),
+    rgba(37, 43, 40, 0.46);
+}
+
+.log-dock {
+  padding: 8px;
+  border: 1px solid rgba(229, 189, 104, 0.16);
+  border-radius: 8px;
+  background:
+    linear-gradient(180deg, rgba(255, 247, 230, 0.04), transparent),
+    rgba(37, 43, 40, 0.46);
+}
+
+.log-dock .log-panel {
+  height: 100%;
+  min-height: 0;
+  max-height: none;
+}
+
+.chat-messages {
+  min-height: 0;
+  overflow: auto;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background:
+    linear-gradient(135deg, rgba(134, 192, 200, 0.035), transparent 34%),
+    rgba(39, 46, 42, 0.82);
+  line-height: 1.45;
+}
+
+.chat-message {
+  display: grid;
+  gap: 2px;
+  padding: 6px 0;
+  border-bottom: 1px solid rgba(244, 241, 233, 0.07);
+}
+
+.chat-message:last-child {
+  border-bottom: 0;
+}
+
+.chat-message span {
+  color: rgba(244, 241, 233, 0.42);
+  font-size: 10px;
+}
+
+.chat-message strong {
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.chat-message p {
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.chat-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.chat-form input {
+  min-width: 0;
+  height: 34px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: rgba(31, 37, 34, 0.78);
+  color: var(--text);
+  padding: 0 10px;
+}
+
+.dock-handle {
+  position: absolute;
+  left: 50%;
+  top: -8px;
+  right: auto;
+  bottom: auto;
+  z-index: 5;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border: 1px solid rgba(229, 189, 104, 0.44);
+  border-radius: 999px;
+  background: rgba(38, 45, 41, 0.88);
+  color: var(--accent);
+  opacity: 0;
+  transform: translate(-50%, -100%) scale(0.92);
+  cursor: grab;
+  touch-action: none;
+  backdrop-filter: blur(6px);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.26);
+  transition:
+    opacity 120ms ease,
+    transform 120ms ease,
+    border-color 120ms ease,
+    background 120ms ease;
+}
+
+.dock-handle::before {
+  content: "+";
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.dockable-panel:hover .dock-handle,
+.dockable-panel:focus-within .dock-handle,
+.dockable-panel.is-floating .dock-handle,
+.dockable-panel.is-dragging .dock-handle,
+.dockable-panel.dock-resisting .dock-handle {
+  opacity: 1;
+  transform: translate(-50%, -100%) scale(1);
+}
+
+.dock-handle:hover {
+  opacity: 1;
+  transform: translate(-50%, -100%) scale(1);
+  border-color: rgba(217, 183, 95, 0.62);
+  background: rgba(46, 54, 49, 0.9);
+  color: var(--accent);
+}
+
+.dockable-panel.dock-resisting .dock-handle {
+  border-color: var(--accent);
+  box-shadow:
+    0 10px 26px rgba(0, 0, 0, 0.3),
+    0 0 0 4px rgba(217, 183, 95, 0.12);
+}
+
+.dockable-panel.is-floating {
+  position: fixed;
+  z-index: 80;
+  display: grid;
+  gap: 8px;
+  max-width: calc(100vw - 20px);
+  max-height: calc(100vh - 20px);
+  padding: 8px;
+  border: 1px solid rgba(217, 183, 95, 0.36);
+  border-radius: 9px;
+  background:
+    linear-gradient(135deg, rgba(217, 184, 101, 0.06), transparent 30%),
+    rgba(39, 46, 42, 0.95);
+  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.34);
+}
+
+.lookup-panel.is-floating {
+  grid-template-rows: auto minmax(0, 1fr);
+  width: min(420px, calc(100vw - 20px));
+}
+
+.chat-dock.is-floating {
+  grid-template-rows: minmax(0, 1fr) auto;
+  width: min(420px, calc(100vw - 20px));
+}
+
+.log-dock.is-floating {
+  width: min(420px, calc(100vw - 20px));
+}
+
+.dockable-panel.is-dragging {
+  opacity: 0.96;
+  transition: none;
+}
+
+.dockable-panel.is-dragging .dock-handle {
+  cursor: grabbing;
+}
+
+body.dock-panel-dragging,
+body.dock-panel-dragging * {
+  cursor: grabbing !important;
+}
+
+.dockable-panel.dock-snap-ready {
+  border-color: var(--accent);
+  box-shadow:
+    0 18px 48px rgba(0, 0, 0, 0.5),
+    0 0 0 4px rgba(217, 183, 95, 0.16);
+}
+
+.dockable-panel.is-floating .lookup-output {
+  max-height: min(48vh, 360px);
+}
+
+.dockable-panel.is-floating .chat-messages {
+  max-height: min(46vh, 320px);
+}
+
+.dockable-panel.is-floating .log-panel {
+  max-height: min(46vh, 320px);
+}

@@ -2,6 +2,7 @@ function openZone(playerId, zone) {
   const player = state.players[playerId];
   const cards = getZoneCards(player, zone);
   const canControl = seat === playerId;
+  const canReveal = canControl || seat === "spectator";
   els.zoneTitle.textContent = `${player.name} - ${zoneLabel(zone)}`;
   els.zoneMeta.textContent = `${zone === "extra" ? player.extraDeck.length : cards.length} 张`;
   if (zone === "library") {
@@ -22,7 +23,7 @@ function openZone(playerId, zone) {
     showDialog(els.zoneDialog);
     return;
   }
-  if (zone === "hand" && !canControl) {
+  if (zone === "hand" && !canReveal) {
     els.zoneCards.innerHTML = cards.map(renderCardBack).join("");
     showDialog(els.zoneDialog);
     return;
@@ -305,12 +306,15 @@ function zoneLabel(zone) {
 }
 
 function renderLibraryList(player) {
+  return renderCardListRows(libraryRows(player));
+}
+
+function libraryRows(player) {
   const counts = countCardsByKey(player.library);
   const deckList = player.deckList?.length ? player.deckList : normalizeDeckList(inferDeckList(player));
-  const rows = deckList
+  return deckList
     .map((entry) => ({ ...entry, remaining: counts.get(entry.name) || 0 }))
     .filter((entry) => entry.remaining > 0);
-  return renderCardListRows(rows);
 }
 
 function renderExtraList(player) {
@@ -372,12 +376,14 @@ function chooseZoneCard(playerId, zone) {
   const cards = getZoneCards(player, zone);
   const rows = zone === "extra"
     ? normalizeExtraDeckList(player.extraDeck).map((entry) => ({ name: entry.name, remaining: null }))
-    : [];
-  if (zone === "extra" ? !rows.length : !cards.length) return Promise.resolve(null);
+    : zone === "library"
+      ? libraryRows(player)
+      : [];
+  if (["extra", "library"].includes(zone) ? !rows.length : !cards.length) return Promise.resolve(null);
 
   els.zoneTitle.textContent = `${player.name} - 选择${zoneLabel(zone)}`;
-  els.zoneMeta.textContent = zone === "extra" ? `${rows.length} 种` : `${cards.length} 张`;
-  els.zoneCards.innerHTML = zone === "extra" ? renderCardListRows(rows) : renderOrderedZoneList(player, zone);
+  els.zoneMeta.textContent = ["extra", "library"].includes(zone) ? `${rows.length} 种` : `${cards.length} 张`;
+  els.zoneCards.innerHTML = ["extra", "library"].includes(zone) ? renderCardListRows(rows) : renderOrderedZoneList(player, zone);
 
   return new Promise((resolve) => {
     let settled = false;

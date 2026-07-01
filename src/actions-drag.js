@@ -279,6 +279,10 @@ async function handleBattlefieldDrop(event, canvasEl) {
       await handleZoneSelectionBattlefieldDrop(event, payload, canvasEl);
       return;
     }
+    if (payload.from === "library") {
+      await handleZoneSelectionBattlefieldDrop(event, { ...payload, type: "zone-select", cardId: undefined }, canvasEl);
+      return;
+    }
     const player = state.players[payload.playerId];
     const card = findCardInZone(player, payload.cardId, payload.from);
     if (!card) return;
@@ -315,7 +319,7 @@ async function handleZoneDrop(event, dropEl) {
 }
 
 async function handleZoneSelectionBattlefieldDrop(event, payload, canvasEl) {
-  if (!["extra", "graveyard", "exile"].includes(payload.from)) return;
+  if (!["library", "extra", "graveyard", "exile"].includes(payload.from)) return;
   const player = state.players[payload.playerId];
   const placeholder = makeFaceDownPlaceholder();
   const position = battlefieldDropPosition(event, payload, canvasEl, placeholder);
@@ -597,4 +601,3 @@ function markerDropPosition(event, halfEl, isOpponentHalf) {
     gridY: clampNumber(Math.round(y / BATTLE_GRID_SIZE), 0, maxGridY),
   };
 }
-

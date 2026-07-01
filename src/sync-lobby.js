@@ -290,6 +290,105 @@ function setLobbyMessage(message, tone = "") {
   els.lobbyMessage.dataset.tone = tone;
 }
 
+function initLobbyIdentityControls() {
+  const identity = loadLobbyIdentity();
+  if (els.createJoinSeat) els.createJoinSeat.value = identity.seat;
+  if (els.createJoinName) els.createJoinName.value = identity.name;
+  els.createJoinSeat?.addEventListener("change", saveCreateLobbyIdentity);
+  els.createJoinName?.addEventListener("input", saveCreateLobbyIdentity);
+}
+
+function loadLobbyIdentity() {
+  try {
+    return sanitizeLobbyIdentity(JSON.parse(sessionStorage.getItem(LOBBY_IDENTITY_KEY) || "{}"));
+  } catch {
+    return sanitizeLobbyIdentity({});
+  }
+}
+
+function saveLobbyIdentity(identity) {
+  const normalized = sanitizeLobbyIdentity(identity);
+  sessionStorage.setItem(LOBBY_IDENTITY_KEY, JSON.stringify(normalized));
+  if (normalized.seat === "spectator") {
+    spectatorName = normalized.name;
+    sessionStorage.setItem("mtg-online-spectator-name", spectatorName);
+  }
+  return normalized;
+}
+
+function saveCreateLobbyIdentity() {
+  saveLobbyIdentity(readCreateLobbyIdentity());
+}
+
+function readCreateLobbyIdentity() {
+  return sanitizeLobbyIdentity({
+    seat: els.createJoinSeat?.value,
+    name: els.createJoinName?.value,
+  });
+}
+
+function readTableCardIdentity(card) {
+  return sanitizeLobbyIdentity({
+    seat: card?.querySelector("[data-table-seat]")?.value,
+    name: card?.querySelector("[data-table-player-name]")?.value,
+  });
+}
+
+function sanitizeLobbyIdentity(identity) {
+  return {
+    seat: normalizeSeat(identity?.seat),
+    name: sanitizeLobbyDisplayName(identity?.name),
+  };
+}
+
+function sanitizeLobbyDisplayName(value) {
+  return String(value || "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 24);
+}
+
+function lobbySeatOptions(selectedSeat) {
+  return SEAT_ORDER.map((value) => {
+    const selected = value === selectedSeat ? " selected" : "";
+    return `<option value="${value}"${selected}>以 ${escapeHtml(SEAT_LABELS[value])} 加入</option>`;
+  }).join("");
+}
+
+function applyJoinedIdentity(identity) {
+  const next = saveLobbyIdentity(identity);
+  seat = next.seat;
+  sessionStorage.setItem("mtg-online-seat", seat);
+  localStorage.removeItem("mtg-online-seat");
+
+  let actor = seatDisplayName(seat);
+  let prefix = "";
+  if (seat === "spectator") {
+    spectatorName = next.name || spectatorName;
+    sessionStorage.setItem("mtg-online-spectator-name", spectatorName);
+    actor = spectatorName || SEAT_LABELS.spectator;
+  } else if (next.name) {
+    const player = state.players[seat];
+    const previous = player.name;
+    const renamed = sanitizePlayerName(next.name, seat);
+    player.name = renamed;
+    actor = renamed;
+    if (renamed !== previous) {
+      prefix = `${previous} 改名为 ${renamed}；`;
+    }
+  }
+
+  resetPanelPositions();
+  updateSeatToggle();
+  return `${prefix}${actor} 以 ${SEAT_LABELS[seat]} 身份加入牌桌`;
+}
+
+function appendLogMessage(message) {
+  if (!message) return;
+  state.updatedAt = Math.max(Date.now(), (Number(state.updatedAt) || 0) + 1);
+  state.log = [message, ...state.log].slice(0, 40);
+}
+
 function closeOpenDialogs() {
   [els.zoneDialog, els.cardDialog, els.libraryMoveDialog].forEach((dialog) => {
     if (dialog?.open) dialog.close();
@@ -324,13 +423,15 @@ function renderLobbyTables(tables) {
   els.tableList.querySelectorAll("[data-join-table]").forEach((button) => {
     button.addEventListener("click", () => {
       const tableId = button.dataset.joinTable;
-      const password = button.closest(".table-card")?.querySelector("[data-table-password]")?.value || "";
-      joinTable(tableId, password);
+      const card = button.closest(".table-card");
+      const password = card?.querySelector("[data-table-password]")?.value || "";
+      joinTable(tableId, password, readTableCardIdentity(card));
     });
   });
 }
 
 function renderLobbyTableCard(table) {
+  const identity = loadLobbyIdentity();
   const lastBadge = isLastPlayedTable(table.id) ? '<span class="last-table-badge">上次游玩</span>' : "";
   const names = Array.isArray(table.playerNames) ? table.playerNames.filter(Boolean).join(" vs ") : "P1 vs P2";
   const passwordHint = table.hasPassword ? "需要密码" : "无密码";
@@ -346,6 +447,8 @@ function renderLobbyTableCard(table) {
       </div>
       <div class="table-join-row">
         <input data-table-password="${escapeHtml(table.id)}" type="password" placeholder="${table.hasPassword ? "输入密码" : "密码可空"}" autocomplete="current-password" />
+        <select data-table-seat="${escapeHtml(table.id)}" aria-label="加入身份">${lobbySeatOptions(identity.seat)}</select>
+        <input data-table-player-name="${escapeHtml(table.id)}" type="text" maxlength="24" placeholder="显示名" value="${escapeHtml(identity.name)}" autocomplete="off" />
         <button type="button" data-join-table="${escapeHtml(table.id)}">进入</button>
       </div>
     </article>`;
@@ -366,6 +469,7 @@ async function createTable(event) {
   event.preventDefault();
   const requestedId = els.createTableId.value.trim();
   const password = els.createTablePassword.value;
+  const identity = readCreateLobbyIdentity();
   setLobbyMessage("正在创建牌桌...");
   try {
     const response = await fetch(TABLES_URL, {
@@ -388,15 +492,16 @@ async function createTable(event) {
     }
     els.createTableId.value = "";
     els.createTablePassword.value = "";
-    await joinTable(data.table.id, password);
+    await joinTable(data.table.id, password, identity);
   } catch {
     setLobbyMessage("无法连接大厅服务，请确认 server.py 正在运行。", "error");
   }
 }
 
-async function joinTable(tableId, password = "") {
+async function joinTable(tableId, password = "", identity = loadLobbyIdentity()) {
   const id = String(tableId || "").trim();
   if (!id) return;
+  const joinIdentity = saveLobbyIdentity(identity);
   setLobbyMessage(`正在进入牌桌 ${id}...`);
   try {
     const response = await fetch(TABLE_JOIN_URL, {
@@ -422,10 +527,17 @@ async function joinTable(tableId, password = "") {
     activeTable = data.table;
     activeTablePassword = password;
     state = data.state ? migrateState(data.state) : makeInitialState();
+    const joinMessage = applyJoinedIdentity(joinIdentity);
+    appendLogMessage(joinMessage);
     markLastTable(id);
     persistLocalState();
     showTable();
+    queueTablePublish();
     await startOnlineSync();
+    if (joinMessage && !state.log.includes(joinMessage)) {
+      applyJoinedIdentity(joinIdentity);
+      saveState(joinMessage, { captureLayout: false });
+    }
   } catch {
     setLobbyMessage("无法连接大厅服务，请确认 server.py 正在运行。", "error");
   }
